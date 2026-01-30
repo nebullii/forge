@@ -1,17 +1,18 @@
-"""Forge CLI - AI-agnostic project builder."""
+"""Forge CLI - Project scaffolding for LLM-assisted development."""
 
 import os
 import sys
+import shutil
 import argparse
-import yaml
+import subprocess
+import webbrowser
 from pathlib import Path
 
-from .config import load_config, get_provider
-from .builder import Builder
-from .deployer import Deployer
+import yaml
 
 
 FORGE_DIR = ".forge"
+TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
 
 
 def cmd_new(args):
@@ -26,10 +27,35 @@ def cmd_new(args):
     project_path.mkdir(parents=True)
     forge_path = project_path / FORGE_DIR
     forge_path.mkdir()
-    (forge_path / "context").mkdir()
 
-    # Create spec.md
-    (forge_path / "spec.md").write_text(f"""# Project: {args.name}
+    # Check for template
+    template = getattr(args, 'template', None)
+    if template:
+        template_path = TEMPLATES_DIR / template / ".forge"
+        if template_path.exists():
+            for f in template_path.iterdir():
+                if f.is_file():
+                    shutil.copy(f, forge_path / f.name)
+            print(f"Created {args.name}/ from '{template}' template")
+        else:
+            print(f"Warning: Template '{template}' not found, using default")
+            _create_default_files(forge_path, args.name)
+    else:
+        _create_default_files(forge_path, args.name)
+
+    print(f"")
+    print(f"Next steps:")
+    print(f"  1. cd {args.name}")
+    print(f"  2. Edit .forge/spec.md with your idea")
+    print(f"  3. Use your LLM CLI to build it")
+    print(f"")
+    print(f"Example with Claude Code:")
+    print(f"  claude \"Read .forge/spec.md and .forge/rules.md, then build this project\"")
+
+
+def _create_default_files(forge_path: Path, project_name: str):
+    """Create default spec.md and rules.md."""
+    (forge_path / "spec.md").write_text(f"""# Project: {project_name}
 
 ## What
 [Describe what you're building in 1-2 sentences]
@@ -46,183 +72,169 @@ def cmd_new(args):
 [What should it feel like? Fast? Minimal? Fun?]
 """)
 
-    # Create rules.md
     (forge_path / "rules.md").write_text("""# Build Rules
 
 ## Constraints
 - Use free tiers only (no paid services)
 - Single deployable unit (no microservices)
-- No complex infrastructure (no Kubernetes, no Terraform)
-- Prefer SQLite or managed free-tier databases
+- No complex infrastructure
+- Prefer SQLite for data persistence
 
 ## Tech Preferences
 - Pick boring, proven technology
 - Minimize dependencies
 - Prioritize simplicity over scalability
-- Use environment variables for all secrets
+- Use environment variables for secrets
 
 ## Code Style
 - Clear over clever
 - Small files, small functions
 - Include basic error handling
-- Add comments only where logic isn't obvious
 """)
 
-    # Create empty decisions.md
-    (forge_path / "decisions.md").write_text("""# Decisions
-
-*AI will write here after analyzing your spec.*
-
-## Tech Stack
-[To be determined]
-
-## Architecture
-[To be determined]
-
-## Reasoning
-[To be determined]
-""")
-
-    # Create empty tasks.md
-    (forge_path / "tasks.md").write_text("""# Tasks
-
-*AI will break down the build into tasks here.*
-
-## Status
-- [ ] Pending
-
-## Task List
-[To be generated]
-""")
-
-    print(f"✅ Created {args.name}/")
-    print(f"")
-    print(f"Next steps:")
-    print(f"  1. cd {args.name}")
-    print(f"  2. Edit .forge/spec.md with your project idea")
-    print(f"  3. Run: forge build")
+    print(f"Created {project_name}/")
 
 
-def cmd_build(args):
-    """Build the project using AI."""
+def cmd_init(args):
+    """Initialize .forge/ in current directory."""
     forge_path = Path(FORGE_DIR)
 
-    if not forge_path.exists():
-        print("Error: No .forge/ directory found. Run 'forge new <name>' first.")
-        sys.exit(1)
+    if forge_path.exists():
+        print(".forge/ already exists")
+        return
 
-    config = load_config()
-    provider = get_provider(config, args.provider)
+    forge_path.mkdir()
+    project_name = Path.cwd().name
+    _create_default_files(forge_path, project_name)
 
-    builder = Builder(provider, forge_path, step_mode=args.step)
-
-    print(f"🔨 Building with {provider.name}...")
     print("")
+    print("Next: Edit .forge/spec.md with your idea")
+
+
+def cmd_dev(args):
+    """Run local development server."""
+    from .dev_server import DevServer
+
+    server = DevServer(Path.cwd())
+    port = getattr(args, 'port', None) or 8080
+    server.run(port=port)
+
+
+def cmd_sprint(args):
+    """Sprint management commands."""
+    from .sprint import cmd_sprint_start, cmd_sprint_status, cmd_sprint_wrap
+
+    if args.sprint_cmd == "start":
+        cmd_sprint_start(args)
+    elif args.sprint_cmd == "status":
+        cmd_sprint_status(args)
+    elif args.sprint_cmd == "wrap":
+        cmd_sprint_wrap(args)
+    else:
+        print("Usage: forge sprint <start|status|wrap>")
+
+
+def cmd_demo(args):
+    """Generate demo QR code for a URL."""
+    url = args.url
+
+    if not url:
+        # Try to get from sundai.yaml
+        sundai_path = Path(FORGE_DIR) / "sundai.yaml"
+        if sundai_path.exists():
+            with open(sundai_path) as f:
+                config = yaml.safe_load(f) or {}
+                url = config.get("deployed_url")
+
+    if not url:
+        print("Usage: forge demo <url>")
+        print("   or: forge demo (if URL saved from previous deploy)")
+        return
 
     try:
-        builder.run()
-        print("")
-        print("✅ Build complete!")
-        print("   Run 'forge deploy' to ship it.")
-    except KeyboardInterrupt:
-        print("\n⏸️  Build paused. Run 'forge build' to continue.")
-    except Exception as e:
-        print(f"\n❌ Build failed: {e}")
+        import qrcode
+        qr = qrcode.QRCode(version=1, box_size=10, border=4)
+        qr.add_data(url)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        qr_path = Path("demo-qr.png")
+        img.save(qr_path)
+        print(f"QR code saved: {qr_path}")
+    except ImportError:
+        print("QR code requires: pip install 'qrcode[pil]'")
+
+    print(f"URL: {url}")
+    webbrowser.open(url)
+
+
+def cmd_publish(args):
+    """Publish project to GitHub."""
+    if not shutil.which("gh"):
+        print("Requires GitHub CLI: https://cli.github.com")
         sys.exit(1)
 
+    project_name = Path.cwd().name
 
-def cmd_deploy(args):
-    """Deploy the project to hosting."""
-    forge_path = Path(FORGE_DIR)
+    # Initialize git if needed
+    if not Path(".git").exists():
+        subprocess.run(["git", "init"], check=True)
+        subprocess.run(["git", "add", "."], check=True)
+        subprocess.run(["git", "commit", "-m", "Initial commit"], check=True)
 
-    if not forge_path.exists():
-        print("Error: No .forge/ directory found.")
-        sys.exit(1)
+    print(f"Creating GitHub repo: {project_name}")
+    result = subprocess.run(
+        ["gh", "repo", "create", project_name, "--public", "--source=.", "--push"],
+        capture_output=True,
+        text=True
+    )
 
-    config = load_config()
-    deployer = Deployer(config, args.target)
-
-    print(f"🚀 Deploying to {deployer.target}...")
-
-    try:
-        url = deployer.run()
-        print("")
-        print(f"✅ Deployed!")
-        print(f"   {url}")
-    except Exception as e:
-        print(f"\n❌ Deploy failed: {e}")
-        sys.exit(1)
-
-
-def cmd_status(args):
-    """Show build status."""
-    forge_path = Path(FORGE_DIR)
-
-    if not forge_path.exists():
-        print("No .forge/ directory found.")
-        return
-
-    tasks_file = forge_path / "tasks.md"
-    if not tasks_file.exists():
-        print("No tasks yet. Run 'forge build' first.")
-        return
-
-    content = tasks_file.read_text()
-    print(content)
-
-
-def cmd_reset(args):
-    """Reset build state (keeps spec.md and rules.md)."""
-    forge_path = Path(FORGE_DIR)
-
-    if not forge_path.exists():
-        print("No .forge/ directory found.")
-        return
-
-    # Clear decisions and tasks
-    (forge_path / "decisions.md").write_text("# Decisions\n\n*Will be regenerated on next build.*\n")
-    (forge_path / "tasks.md").write_text("# Tasks\n\n*Will be regenerated on next build.*\n")
-
-    # Clear context
-    context_path = forge_path / "context"
-    if context_path.exists():
-        for f in context_path.iterdir():
-            f.unlink()
-
-    print("✅ Reset complete. spec.md and rules.md preserved.")
-    print("   Run 'forge build' to start fresh.")
+    if result.returncode == 0:
+        print("Published!")
+        for line in result.stdout.splitlines():
+            if "github.com" in line:
+                print(f"  {line.strip()}")
+                break
+    else:
+        # Try pushing to existing repo
+        subprocess.run(["git", "push", "-u", "origin", "main"], check=True)
+        print("Pushed to existing repo")
 
 
 def main():
     parser = argparse.ArgumentParser(
         prog="forge",
-        description="AI-agnostic project builder"
+        description="Project scaffolding for LLM-assisted development"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # forge new
     new_parser = subparsers.add_parser("new", help="Create new project")
     new_parser.add_argument("name", help="Project name")
+    new_parser.add_argument("--template", "-t", help="Template: web-app, api-only, slack-bot, discord-bot")
     new_parser.set_defaults(func=cmd_new)
 
-    # forge build
-    build_parser = subparsers.add_parser("build", help="Build the project")
-    build_parser.add_argument("--provider", "-p", help="AI provider to use")
-    build_parser.add_argument("--step", "-s", action="store_true", help="Step through tasks interactively")
-    build_parser.set_defaults(func=cmd_build)
+    # forge init
+    init_parser = subparsers.add_parser("init", help="Initialize .forge/ in current directory")
+    init_parser.set_defaults(func=cmd_init)
 
-    # forge deploy
-    deploy_parser = subparsers.add_parser("deploy", help="Deploy the project")
-    deploy_parser.add_argument("--target", "-t", help="Deployment target")
-    deploy_parser.set_defaults(func=cmd_deploy)
+    # forge dev
+    dev_parser = subparsers.add_parser("dev", help="Run local dev server")
+    dev_parser.add_argument("--port", "-p", type=int, default=8080, help="Port number")
+    dev_parser.set_defaults(func=cmd_dev)
 
-    # forge status
-    status_parser = subparsers.add_parser("status", help="Show build status")
-    status_parser.set_defaults(func=cmd_status)
+    # forge sprint
+    sprint_parser = subparsers.add_parser("sprint", help="Sprint timer")
+    sprint_parser.add_argument("sprint_cmd", choices=["start", "status", "wrap"], help="Sprint command")
+    sprint_parser.set_defaults(func=cmd_sprint)
 
-    # forge reset
-    reset_parser = subparsers.add_parser("reset", help="Reset build state")
-    reset_parser.set_defaults(func=cmd_reset)
+    # forge demo
+    demo_parser = subparsers.add_parser("demo", help="Generate demo QR code")
+    demo_parser.add_argument("url", nargs="?", help="URL to generate QR for")
+    demo_parser.set_defaults(func=cmd_demo)
+
+    # forge publish
+    publish_parser = subparsers.add_parser("publish", help="Publish to GitHub")
+    publish_parser.set_defaults(func=cmd_publish)
 
     args = parser.parse_args()
     args.func(args)
