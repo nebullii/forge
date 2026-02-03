@@ -28,3 +28,9 @@
 
 ## Vibe
 [Fun, helpful, engaging]
+
+## Judging Notes
+- Innovation: [What's new/creative about your bot?]
+- Technical: [What was challenging? Slash commands? Integrations?]
+- Impact: [How does this improve the Discord server experience?]
+- Completion: [What % is working?]

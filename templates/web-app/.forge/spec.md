@@ -29,3 +29,9 @@
 
 ## Vibe
 [Modern, clean, fast - describe the feel]
+
+## Judging Notes
+- Innovation: [What's new/creative about your approach?]
+- Technical: [What was challenging to build?]
+- Impact: [Who benefits and how?]
+- Completion: [What % is working?]

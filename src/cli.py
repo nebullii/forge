@@ -14,13 +14,75 @@ import yaml
 FORGE_DIR = ".forge"
 TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
 
+# Template descriptions for the templates command and interactive mode
+TEMPLATES = {
+    "web-app": "Full-stack web app (React + FastAPI + SQLite)",
+    "api-only": "REST API backend (FastAPI + SQLite)",
+    "ai-app": "AI/LLM application (OpenAI/Anthropic + chat UI)",
+    "chrome-ext": "Chrome browser extension (Manifest V3)",
+    "cli-tool": "Command-line tool (Click/Typer + packaging)",
+    "data-viz": "Dashboard/visualization (Streamlit or React + charts)",
+    "slack-bot": "Slack bot (slack-bolt)",
+    "discord-bot": "Discord bot (discord.py)",
+}
+
+
+def _interactive_new(default_name=None):
+    """Interactive project creation with template picker."""
+    print("\nAvailable templates:\n")
+    template_list = list(TEMPLATES.keys())
+    for i, (name, desc) in enumerate(TEMPLATES.items(), 1):
+        print(f"  {i}. {name:12} - {desc}")
+    print(f"  {len(TEMPLATES) + 1}. (blank)       - Start from scratch")
+    print()
+
+    # Get template choice
+    while True:
+        try:
+            choice = input("Choose a template (1-9): ").strip()
+            choice_num = int(choice)
+            if 1 <= choice_num <= len(TEMPLATES):
+                template = template_list[choice_num - 1]
+                break
+            elif choice_num == len(TEMPLATES) + 1:
+                template = None
+                break
+            else:
+                print("Invalid choice. Try again.")
+        except (ValueError, KeyboardInterrupt):
+            print("\nCancelled.")
+            sys.exit(0)
+
+    # Get project name
+    if default_name:
+        project_name = default_name
+    else:
+        project_name = input("Project name: ").strip()
+        if not project_name:
+            print("Error: Project name is required")
+            sys.exit(1)
+
+    return template, project_name
+
 
 def cmd_new(args):
     """Create a new project with .forge/ structure."""
-    project_path = Path(args.name)
+    # Handle interactive mode
+    interactive = getattr(args, 'interactive', False)
+    template = getattr(args, 'template', None)
+    project_name = getattr(args, 'name', None)
+
+    if interactive:
+        template, project_name = _interactive_new(project_name)
+
+    if not project_name:
+        print("Error: Project name is required")
+        sys.exit(1)
+
+    project_path = Path(project_name)
 
     if project_path.exists():
-        print(f"Error: {args.name} already exists")
+        print(f"Error: {project_name} already exists")
         sys.exit(1)
 
     # Create project directory
@@ -28,24 +90,22 @@ def cmd_new(args):
     forge_path = project_path / FORGE_DIR
     forge_path.mkdir()
 
-    # Check for template
-    template = getattr(args, 'template', None)
     if template:
         template_path = TEMPLATES_DIR / template / ".forge"
         if template_path.exists():
             for f in template_path.iterdir():
                 if f.is_file():
                     shutil.copy(f, forge_path / f.name)
-            print(f"Created {args.name}/ from '{template}' template")
+            print(f"Created {project_name}/ from '{template}' template")
         else:
             print(f"Warning: Template '{template}' not found, using default")
-            _create_default_files(forge_path, args.name)
+            _create_default_files(forge_path, project_name)
     else:
-        _create_default_files(forge_path, args.name)
+        _create_default_files(forge_path, project_name)
 
     print(f"")
     print(f"Next steps:")
-    print(f"  1. cd {args.name}")
+    print(f"  1. cd {project_name}")
     print(f"  2. Edit .forge/spec.md with your idea")
     print(f"  3. Use your LLM CLI to build it")
     print(f"")
@@ -167,6 +227,17 @@ def cmd_demo(args):
     webbrowser.open(url)
 
 
+def cmd_templates(args):
+    """List available project templates."""
+    print("\nAvailable templates:\n")
+    for name, desc in TEMPLATES.items():
+        print(f"  {name:12} - {desc}")
+    print()
+    print("Usage: forge new my-project --template <template-name>")
+    print("   or: forge new --interactive")
+    print()
+
+
 def cmd_publish(args):
     """Publish project to GitHub."""
     if not shutil.which("gh"):
@@ -209,9 +280,14 @@ def main():
 
     # forge new
     new_parser = subparsers.add_parser("new", help="Create new project")
-    new_parser.add_argument("name", help="Project name")
-    new_parser.add_argument("--template", "-t", help="Template: web-app, api-only, slack-bot, discord-bot")
+    new_parser.add_argument("name", nargs="?", help="Project name")
+    new_parser.add_argument("--template", "-t", help="Template name (use 'forge templates' to list)")
+    new_parser.add_argument("--interactive", "-i", action="store_true", help="Interactive mode with template picker")
     new_parser.set_defaults(func=cmd_new)
+
+    # forge templates
+    templates_parser = subparsers.add_parser("templates", help="List available templates")
+    templates_parser.set_defaults(func=cmd_templates)
 
     # forge init
     init_parser = subparsers.add_parser("init", help="Initialize .forge/ in current directory")

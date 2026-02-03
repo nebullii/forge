@@ -23,3 +23,9 @@
 
 ## Vibe
 [Helpful, quick responses, friendly tone]
+
+## Judging Notes
+- Innovation: [What's new/creative about your bot?]
+- Technical: [What was challenging? Event handling? Integrations?]
+- Impact: [How does this improve team workflows?]
+- Completion: [What % is working?]

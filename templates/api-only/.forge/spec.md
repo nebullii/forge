@@ -33,3 +33,9 @@ Item:
 
 ## Vibe
 [Fast, reliable, well-documented]
+
+## Judging Notes
+- Innovation: [What's new/creative about your API design?]
+- Technical: [What was challenging? Data modeling? Performance?]
+- Impact: [Who will use this API and for what?]
+- Completion: [What % is working?]
