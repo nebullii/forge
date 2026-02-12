@@ -1,0 +1,32 @@
+{
+    "allowed_paths": [
+        "src/.*",
+        "tests/.*",
+        "README.md",
+        "pyproject.toml",
+        "requirements.txt",
+        "templates/.*",
+        "static/.*",
+        "public/.*",
+        "docs/.*"
+    ],
+    "blocked_paths": [
+        ".env.*",
+        "\\.ssh/.*",
+        "\\.aws/.*",
+        "\\.git/.*",
+        "config/secrets.json",
+        ".*/\\.bash_history",
+        "/etc/.*",
+        "/var/.*"
+    ],
+    "blocked_patterns": [
+        "eval\\(",
+        "exec\\(",
+        "os\\.system\\(",
+        "subprocess\\.run\\(",
+        "__import__",
+        "getattr\\(",
+        "setattr\\("
+    ]
+}
