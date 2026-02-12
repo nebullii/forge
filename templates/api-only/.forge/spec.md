@@ -1,11 +1,22 @@
 # Project: [Your API Name]
 
 ## What
-[A REST API that provides X functionality]
+[An SEO Analyzer - An interactive tool that allows to 
+- enter any website URL 
+- View a visual representation of the site's load times and tags
+- Make sure what we are building is properly configured
+- check if site is properly implemented
+- Stores recently analyzed sites
+- Key Skills :
+  - prompting
+  - processing and analyzing HTML content
+  - creating intuitive data
+  - error handling and edge cases
+  - storage]
 
 ## Users
-- [Who will consume this API?]
-- [Frontend apps, mobile apps, other services?]
+- [This app is for businesses trying to enhance SEO]
+- [webapp is the primary app]
 
 ## Endpoints
 
