@@ -3,6 +3,7 @@
 import sys
 import uuid
 import yaml
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -51,6 +52,8 @@ class BuildOrchestrator:
         """Run the build (or incremental feature addition)."""
         spec = self._read_forge_file("spec.md")
         rules = self._read_forge_file("rules.md")
+        self._warn_suspicious(spec, "spec.md")
+        self._warn_suspicious(rules, "rules.md")
 
         if not spec:
             print("Error: .forge/spec.md is empty or missing.")
@@ -257,6 +260,42 @@ class BuildOrchestrator:
         if path.exists():
             return path.read_text()
         return ""
+
+    def _warn_suspicious(self, text: str, name: str) -> None:
+        if not text:
+            return
+
+        patterns = [
+            r"\bexfiltrat(e|ion|ing)\b",
+            r"\bleak\b",
+            r"\bsecret(s)?\b",
+            r"\btoken(s)?\b",
+            r"\bapi[- _]?key(s)?\b",
+            r"\bpassword(s)?\b",
+            r"\bprivate key\b",
+            r"\bssh\b",
+            r"\bcredential(s)?\b",
+            r"\bupload\b",
+            r"\bpost\b",
+            r"\btransfer\b",
+            r"\bsend to\b",
+            r"\bhttp(s)?://\b",
+            r"\bcurl\b",
+            r"\bwget\b",
+            r"\bpastebin\b",
+            r"\bgist\b",
+            r"\bdrive\.google\b",
+            r"\bdropbox\b",
+        ]
+
+        hits = []
+        for pat in patterns:
+            if re.search(pat, text, re.IGNORECASE):
+                hits.append(pat.strip("\\b").replace("\\", ""))
+
+        if hits:
+            unique = ", ".join(sorted(set(hits)))
+            print(f"WARNING: Suspicious pattern(s) found in .forge/{name}: {unique}")
 
     def _save_state(self):
         save_build_state(self.forge_path, self.state)
