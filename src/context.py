@@ -18,12 +18,20 @@ SKIP_EXTENSIONS = {
     ".zip", ".tar", ".gz", ".bz2",
     ".db", ".sqlite", ".sqlite3",
     ".lock",
+    ".pem", ".key", ".crt", ".cer", ".p12", ".pfx", ".jks", ".keystore",
 }
 
 CONFIG_NAMES = {
     "package.json", "requirements.txt", "pyproject.toml", "Cargo.toml",
     "go.mod", "manifest.json", "Dockerfile", "docker-compose.yml",
     ".env.example", "README.md",
+}
+
+SENSITIVE_NAMES = {
+    ".env", ".env.local", ".env.development", ".env.production",
+    "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
+    "credentials", "credential", "secrets", "secret", "token",
+    "apikey", "api_key", "password", "passwd", "private",
 }
 
 
@@ -38,6 +46,11 @@ def gather_project_files(project_root: Path) -> list[tuple[Path, str]]:
         if any(part in SKIP_DIRS or part.startswith(".") for part in rel.parts):
             continue
         if path.suffix.lower() in SKIP_EXTENSIONS:
+            continue
+        name_lower = path.name.lower()
+        if name_lower in SENSITIVE_NAMES:
+            continue
+        if any(marker in name_lower for marker in SENSITIVE_NAMES):
             continue
 
         try:
