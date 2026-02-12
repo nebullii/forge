@@ -1,4 +1,4 @@
-"""Agentic Firewall (AFW) - Core security layer for Forge."""
+"""Agentic Firewall (AFW) - Core security layer for any app."""
 
 import re
 import json
@@ -9,28 +9,67 @@ from datetime import datetime
 DEFAULT_POLICY = {
     "allowed_paths": [
         "src/.*",
+        "app/.*",
+        "apps/.*",
+        "packages/.*",
+        "services/.*",
+        "lib/.*",
+        "libs/.*",
+        "components/.*",
         "tests/.*",
+        "test/.*",
+        "docs/.*",
+        "public/.*",
+        "static/.*",
+        "assets/.*",
+        "templates/.*",
+        "scripts/.*",
+        "config/.*",
+        "infra/.*",
+        "ops/.*",
+        "docker/.*",
+        "\\.github/.*",
         "README.md",
+        "LICENSE.*",
         "pyproject.toml",
         "requirements.txt",
-        "templates/.*",
-        "static/.*",
-        "public/.*"
+        "package.json",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "Cargo.toml",
+        "go.mod",
+        "go.sum",
+        "Makefile",
+        "Dockerfile",
+        "docker-compose\\.ya?ml"
     ],
     "blocked_paths": [
         ".env.*",
         "\\.ssh/.*",
         "\\.aws/.*",
+        "\\.gnupg/.*",
+        "\\.kube/.*",
         "\\.git/.*",
+        "\\.npmrc",
+        "\\.pypirc",
         "config/secrets.json",
-        ".*/\\.bash_history"
+        "config/credentials.json",
+        ".*/\\.bash_history",
+        "/etc/.*",
+        "/var/.*",
+        "/private/.*",
+        "/System/.*"
     ],
     "blocked_patterns": [
         "eval\\(",
         "exec\\(",
         "os\\.system\\(",
         "subprocess\\.run\\(",
-        "__import__"
+        "__import__",
+        "getattr\\(",
+        "setattr\\(",
+        "importlib\\."
     ]
 }
 

@@ -1,4 +1,4 @@
-# Forge: The Security-Hardened Agent Framework 🛡️
+# The Security-Hardened Agent Framework 🛡️
 
 > Building the next generation of agents without the security risks.
 
@@ -8,7 +8,7 @@ The "Agentic Web" is coming, but it’s currently a security nightmare. Develope
 Existing frameworks focus on *capabilities*, but ignore *containment*.
 
 ## The Solution (60 seconds)
-We built **Forge with Agentic Firewall (AFW)**. It’s a zero-trust orchestrator that treats every agent as potentially compromised.
+We built **Agentic Firewall (AFW)**. It’s a zero-trust orchestrator that treats every agent as potentially compromised.
 
 **The Firewall Core:**
 - **Intercepts all Tool Calls**: Every file write is validated against a Policy-as-Code (`firewall_policy.json`).
@@ -16,7 +16,7 @@ We built **Forge with Agentic Firewall (AFW)**. It’s a zero-trust orchestrator
 - **Content Inspection**: We scan generated code for "Dangerous Primitives" (e.g., `eval()`, `subprocess`) before they hit the disk.
 - **Audit Logging**: A real-time stream of security decisions, making agent behavior fully auditable.
 
-**Demo**: Watch Forge block a task designed to steal credentials.
+**Demo**: Watch the firewall block a task designed to steal credentials.
 
 ## How It Works (30 seconds)
 - **Middleware Architecture**: We injected a security layer between the `CoderAgent` and the `Orchestrator`.
@@ -34,8 +34,3 @@ We built **Forge with Agentic Firewall (AFW)**. It’s a zero-trust orchestrator
 - **Sandbox Integration**: Native support for Docker-containerized build environments.
 
 ---
-
-## Team
-- Neha Chaudhari - Systems, Security, and Core Orchestration.
-
-Built for the Agentic Web Stack Hackathon.
