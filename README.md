@@ -128,6 +128,14 @@ forge build    # Resumes from where it stopped
 forge status   # See what's done and what's pending
 ```
 
+### Agentic Firewall (AFW) 🛡️
+
+Forge is built with security at its core. Every tool call and file write is intercepted by the **Agentic Firewall**, ensuring agents operate within a "Least Privilege" sandbox:
+- **Zero-Trust Validation**: Every file change is checked against `.forge/firewall_policy.json`.
+- **Protected Paths**: Critical files like `.env` and `.ssh/` are immutable for agents.
+- **Malicious Pattern Scanning**: AFW scans generated code for dangerous primitives like `eval()` and `os.system()` before writing to disk.
+- **Audit Logging**: All security decisions are recorded in `.forge/firewall_audit.log`.
+
 ### Incremental Features
 
 Already have a working project? Add features without rebuilding:

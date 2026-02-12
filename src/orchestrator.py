@@ -11,6 +11,7 @@ from typing import Optional
 from .providers import create_provider
 from .providers.base import ProviderConfig
 from .agents import PlannerAgent, CoderAgent, ReviewerAgent
+from .security.firewall import AgenticFirewall
 from .state import (
     BuildState, TaskState, load_build_state, save_build_state, compute_spec_hash,
 )
@@ -44,6 +45,11 @@ class BuildOrchestrator:
         self.planner = PlannerAgent(self.provider, self.project_root)
         self.coder = CoderAgent(self.provider, self.project_root)
         self.reviewer = ReviewerAgent(self.provider, self.project_root) if review else None
+
+        self.firewall = AgenticFirewall(
+            policy_path=self.forge_path / "firewall_policy.json",
+            audit_log=self.forge_path / "firewall_audit.log"
+        )
 
         self.state = load_build_state(forge_path)
         self.provider_config = provider_config
@@ -170,7 +176,18 @@ class BuildOrchestrator:
                 )
 
                 files = self.coder.extract_files(response)
-                written = self.coder.write_files(files)
+                
+                # Apply Agentic Firewall
+                allowed_files = []
+                for filepath, content in files:
+                    permitted, reason = self.firewall.validate_file_write(filepath, content)
+                    if permitted:
+                        allowed_files.append((filepath, content))
+                    else:
+                        print(f"      🚨 FIREWALL BLOCK: {filepath} ({reason})")
+                        self.state.errors.append(f"Firewall blocked {filepath}: {reason}")
+
+                written = self.coder.write_files(allowed_files)
 
                 task.files_written = written
                 task.status = "completed"

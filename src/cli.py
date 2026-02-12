@@ -103,6 +103,11 @@ def cmd_new(args):
     else:
         _create_default_files(forge_path, project_name)
 
+    # Copy firewall policy
+    policy_src = TEMPLATES_DIR / "common" / "firewall_policy.json"
+    if policy_src.exists():
+        shutil.copy(policy_src, forge_path / "firewall_policy.json")
+
     print(f"")
     print(f"Next steps:")
     print(f"  1. cd {project_name}")
