@@ -238,6 +238,114 @@ def cmd_templates(args):
     print()
 
 
+def cmd_build(args):
+    """Build the project using AI agents."""
+    forge_path = Path(FORGE_DIR)
+
+    if not forge_path.exists():
+        print("No .forge/ directory found.")
+        print("Run 'forge new <name>' or 'forge init' first.")
+        sys.exit(1)
+
+    from .config import ensure_config, get_provider_config
+    from .orchestrator import BuildOrchestrator
+
+    config = ensure_config()
+
+    try:
+        provider_config = get_provider_config(config, getattr(args, 'provider', None))
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
+    feature = getattr(args, 'feature', None)
+    no_review = getattr(args, 'no_review', False)
+    verbose = getattr(args, 'verbose', False)
+
+    print(f"Building with {provider_config}...")
+    print("")
+
+    orchestrator = BuildOrchestrator(
+        provider_config=provider_config,
+        forge_path=forge_path,
+        review=not no_review,
+        verbose=verbose,
+    )
+
+    try:
+        orchestrator.run(feature=feature)
+        print("Build complete!")
+        print("")
+        print("Next steps:")
+        print("  forge dev          # Run locally")
+        print("  forge build --feature 'add user auth'  # Add features")
+    except KeyboardInterrupt:
+        print("")
+        print("Build paused. Run 'forge build' to resume.")
+    except Exception as e:
+        print(f"Build failed: {e}")
+        sys.exit(1)
+
+
+def cmd_config(args):
+    """Manage Forge configuration."""
+    from .config import CONFIG_FILE, ensure_config
+
+    config_cmd = getattr(args, 'config_cmd', 'show')
+
+    if config_cmd == "show":
+        if CONFIG_FILE.exists():
+            print(CONFIG_FILE.read_text())
+        else:
+            print(f"No config found at {CONFIG_FILE}")
+            print("Run 'forge config init' to create one.")
+    elif config_cmd == "init":
+        ensure_config()
+        print(f"Config at: {CONFIG_FILE}")
+    elif config_cmd == "path":
+        print(CONFIG_FILE)
+
+
+def cmd_status(args):
+    """Show current build status."""
+    forge_path = Path(FORGE_DIR)
+    if not forge_path.exists():
+        print("No .forge/ directory found.")
+        return
+
+    from .state import load_build_state
+
+    state = load_build_state(forge_path)
+
+    if state.status == "not_started":
+        print("No build started yet. Run 'forge build'.")
+        return
+
+    print(f"Build: {state.build_id}")
+    print(f"Status: {state.status}")
+    print(f"Provider: {state.provider} ({state.model})")
+    print(f"Started: {state.started_at}")
+    if state.completed_at:
+        print(f"Completed: {state.completed_at}")
+    print("")
+
+    if state.tasks:
+        completed = sum(1 for t in state.tasks if t.status == "completed")
+        total = len(state.tasks)
+        print(f"Tasks: {completed}/{total}")
+        for t in state.tasks:
+            icons = {"completed": "+", "failed": "X", "in_progress": ">", "pending": " "}
+            print(f"  [{icons.get(t.status, '?')}] {t.name}")
+            if t.error:
+                print(f"      Error: {t.error}")
+        print("")
+
+    if state.files_written:
+        print(f"Files written: {len(state.files_written)}")
+        for f in state.files_written:
+            print(f"  {f}")
+
+
 def cmd_publish(args):
     """Publish project to GitHub."""
     if not shutil.which("gh"):
@@ -311,6 +419,25 @@ def main():
     # forge publish
     publish_parser = subparsers.add_parser("publish", help="Publish to GitHub")
     publish_parser.set_defaults(func=cmd_publish)
+
+    # forge build
+    build_parser = subparsers.add_parser("build", help="Build project using AI agents")
+    build_parser.add_argument("--provider", "-p", help="AI provider (anthropic, openai, together, ollama)")
+    build_parser.add_argument("--feature", "-f", help="Add a specific feature (incremental build)")
+    build_parser.add_argument("--no-review", action="store_true", help="Skip review phase")
+    build_parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
+    build_parser.set_defaults(func=cmd_build)
+
+    # forge config
+    config_parser = subparsers.add_parser("config", help="Manage configuration")
+    config_parser.add_argument("config_cmd", nargs="?", default="show",
+                               choices=["show", "init", "path"],
+                               help="Config subcommand")
+    config_parser.set_defaults(func=cmd_config)
+
+    # forge status
+    status_parser = subparsers.add_parser("status", help="Show build status")
+    status_parser.set_defaults(func=cmd_status)
 
     args = parser.parse_args()
     args.func(args)

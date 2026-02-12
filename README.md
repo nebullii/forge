@@ -1,89 +1,33 @@
 # Forge
 
-**Turn your project idea into code using AI — without the back-and-forth.**
+**Describe your idea. AI builds it. One command.**
 
-You know when you ask ChatGPT or Claude to build something, and it asks you 20 questions? Or makes weird tech choices? Forge fixes that by giving AI the context it needs upfront.
+Forge is an open-source CLI that turns a project spec into a working codebase using a multi-agent orchestrator. No copy-pasting prompts, no back-and-forth -- just `forge build`.
+
+```
+                 spec.md + rules.md
+                        |
+                   [ Planner Agent ]  ── analyzes spec, creates task plan
+                        |
+                   [ Coder Agent ]    ── generates complete files per task
+                        |
+                   [ Reviewer Agent ] ── validates code, auto-fixes errors
+                        |
+                  working project/
+```
 
 ---
 
-## What Does Forge Do?
+## How It Works
 
-Forge creates a folder with simple text files that describe your project. When you give these files to an AI (like Claude, Cursor, or Copilot), it knows exactly what to build.
-
-```
-your-project/
-└── .forge/
-    ├── spec.md      ← Describe your idea here (you fill this in)
-    ├── rules.md     ← Tech choices & constraints (sensible defaults)
-    ├── prompts.md   ← Copy-paste commands for AI
-    └── deploy.md    ← How to put it online
-```
-
-**Before Forge:** "Build me a todo app" → AI asks 20 questions, picks random tech, builds wrong thing
-
-**After Forge:** AI reads your spec, follows your rules, builds what you actually want
-
----
-
-## Getting Started (5 minutes)
-
-### Step 1: Install Forge
+**1. Scaffold** -- Pick a template. Describe your idea.
 
 ```bash
 pip install forge-ai
+forge new my-app -t web-app
 ```
 
-Don't have Python? [Install it first](https://www.python.org/downloads/) (choose version 3.10 or higher).
-
-### Step 2: Create Your Project
-
-```bash
-forge new my-app --interactive
-```
-
-You'll see a menu like this:
-```
-Available templates:
-
-  1. web-app      - Full-stack web app (React + FastAPI + SQLite)
-  2. api-only     - REST API backend (FastAPI + SQLite)
-  3. ai-app       - AI/LLM application (OpenAI/Anthropic + chat UI)
-  4. chrome-ext   - Chrome browser extension (Manifest V3)
-  5. cli-tool     - Command-line tool (Click/Typer + packaging)
-  6. data-viz     - Dashboard/visualization (Streamlit or React + charts)
-  7. slack-bot    - Slack bot (slack-bolt)
-  8. discord-bot  - Discord bot (discord.py)
-  9. (blank)      - Start from scratch
-
-Choose a template (1-9):
-```
-
-**Pick the one closest to your idea.** Not sure? Start with `web-app` for most projects.
-
-### Step 3: Describe Your Idea
-
-```bash
-cd my-app
-```
-
-Open the file `.forge/spec.md` in any text editor (VS Code, Notepad, whatever you use).
-
-You'll see something like this:
-```markdown
-# Project: [Your App Name]
-
-## What
-[A web application that does X for Y users]
-
-## Users
-- [Primary user type]
-
-## Features
-- [ ] User-facing feature 1
-- [ ] User-facing feature 2
-```
-
-**Fill it in with your idea.** Here's an example:
+**2. Spec** -- Edit `.forge/spec.md` with what you want to build.
 
 ```markdown
 # Project: StudyBuddy
@@ -91,186 +35,308 @@ You'll see something like this:
 ## What
 A flashcard app that helps students memorize vocabulary.
 
-## Users
-- Students studying for exams
-- Language learners
-
 ## Features
-- [ ] Create flashcard decks with terms and definitions
-- [ ] Quiz mode that shows term, user guesses definition
-- [ ] Track which cards you get wrong most often
-- [ ] Simple, clean design that works on phone
+- Create flashcard decks with terms and definitions
+- Quiz mode with spaced repetition
+- Track which cards you get wrong most often
 
 ## Vibe
 Simple, distraction-free, encouraging
 ```
 
-**The more specific you are, the better the AI will build it.**
+**3. Build** -- One command. AI does the rest.
 
-### Step 4: Tell AI to Build It
-
-Now give your project to an AI. Here are the commands for different tools:
-
-**Claude Code (Terminal):**
 ```bash
-claude "Read .forge/spec.md and .forge/rules.md, then build this project step by step"
+forge build
 ```
 
-**Cursor:**
-1. Open your project folder in Cursor
-2. Press `Cmd+I` (Mac) or `Ctrl+I` (Windows) to open Composer
-3. Type: `Read .forge/spec.md and .forge/rules.md, then build this project`
+Forge reads your spec, plans the architecture, generates every file, reviews the code, and fixes issues -- all automatically.
 
-**ChatGPT / Claude.ai (Browser):**
-1. Copy the contents of `.forge/spec.md` and `.forge/rules.md`
-2. Paste them into the chat
-3. Say: "Build this project step by step"
-
-**Aider:**
-```bash
-aider --read .forge/spec.md --read .forge/rules.md
 ```
+Building with anthropic (claude-sonnet-4-20250514)...
 
-### Step 5: Run Your App
+Phase 1: Planning...
+   Plan: 5 tasks
+     - Set up backend structure and dependencies
+     - Create database models and API routes
+     - Set up frontend with React and Tailwind
+     - Build flashcard components and quiz mode
+     - Integration, README, and environment config
 
-The AI will create files and tell you how to run them. Usually it's something like:
+Phase 2: Building...
+   [1/5] Set up backend structure and dependencies
+      + backend/main.py
+      + backend/requirements.txt
+      + backend/db.py
+   [2/5] Create database models and API routes
+      + backend/routes/decks.py
+      + backend/routes/cards.py
+   [3/5] Set up frontend with React and Tailwind
+      + frontend/package.json
+      + frontend/vite.config.js
+      + frontend/src/App.jsx
+   [4/5] Build flashcard components and quiz mode
+      + frontend/src/components/DeckList.jsx
+      + frontend/src/components/FlashCard.jsx
+      + frontend/src/components/QuizMode.jsx
+   [5/5] Integration, README, and environment config
+      + README.md
+      + .env.example
 
-```bash
-# For web apps
-cd frontend && npm install && npm run dev
+Phase 3: Reviewing...
+   Review passed.
 
-# For Python apps
-pip install -r requirements.txt
-python main.py
+Build complete!
 ```
 
 ---
 
-## Which Template Should I Use?
+## Key Features
 
-| I want to build... | Use this template |
-|-------------------|-------------------|
-| A website with user accounts, database, etc. | `web-app` |
-| Just a backend/API (no frontend) | `api-only` |
-| A ChatGPT-style AI chat app | `ai-app` |
-| A Chrome browser extension | `chrome-ext` |
-| A command-line tool | `cli-tool` |
-| Charts, graphs, data dashboard | `data-viz` |
-| A Slack bot | `slack-bot` |
-| A Discord bot | `discord-bot` |
-| Something else entirely | `(blank)` |
+### Multi-Agent Orchestrator
+
+Forge doesn't just dump your spec into a single prompt. It runs a **three-phase pipeline**:
+
+- **Planner Agent** -- Analyzes your spec and rules, produces a structured task plan (3-8 tasks ordered by dependency)
+- **Coder Agent** -- Executes each task sequentially, generating complete files with full context of what's been built so far
+- **Reviewer Agent** -- Validates all generated code for missing imports, broken API contracts, and security issues. Auto-fixes errors.
+
+### Provider Agnostic
+
+Works with any LLM backend. Set an environment variable and go:
+
+| Provider | Setup |
+|----------|-------|
+| **Anthropic** | `export ANTHROPIC_API_KEY=sk-ant-...` |
+| **OpenAI** | `export OPENAI_API_KEY=sk-...` |
+| **Together AI** | `export TOGETHER_API_KEY=...` |
+| **Groq** | `export GROQ_API_KEY=...` |
+| **Ollama** (local) | Just run `ollama serve` |
+
+```bash
+forge build                        # Uses first provider with valid key
+forge build --provider anthropic   # Use a specific provider
+forge build --provider ollama      # Run fully local
+```
+
+### Resumable Builds
+
+Build state is saved after every task. If you hit Ctrl+C or something fails:
+
+```bash
+forge build    # Resumes from where it stopped
+forge status   # See what's done and what's pending
+```
+
+### Incremental Features
+
+Already have a working project? Add features without rebuilding:
+
+```bash
+forge build --feature "add user authentication with email/password"
+forge build --feature "add dark mode toggle"
+```
+
+The planner analyzes your existing code and plans only the changes needed.
+
+### 8 Production-Ready Templates
+
+Each template includes a pre-configured `.forge/` directory with tech stack rules, deployment guides, and AI prompts:
+
+| Template | Stack |
+|----------|-------|
+| `web-app` | React + FastAPI + SQLite + Tailwind |
+| `api-only` | FastAPI + Pydantic + SQLite |
+| `ai-app` | React + FastAPI + OpenAI/Anthropic |
+| `chrome-ext` | Manifest V3 + vanilla JS/React |
+| `cli-tool` | Click/Typer + Rich |
+| `data-viz` | Streamlit or React + Plotly/Recharts |
+| `slack-bot` | Python + slack-bolt |
+| `discord-bot` | Python + discord.py |
 
 ---
 
-## Common Questions
-
-### "I don't know what to put in spec.md"
-
-Just write what you'd tell a friend. Be specific about:
-- **What** does it do?
-- **Who** is it for?
-- **What features** should it have?
-
-Bad: "A social media app"
-Good: "An app where users can post photos, follow other users, and like/comment on posts. Similar to Instagram but simpler."
-
-### "The AI built something different than I wanted"
-
-Your spec probably wasn't specific enough. Add more detail:
-- What should each button do?
-- What happens when someone clicks X?
-- What data needs to be saved?
-
-Then tell the AI: `Read .forge/spec.md again. I updated it. Rebuild the [specific part] to match.`
-
-### "How do I add a feature?"
+## Quick Start
 
 ```bash
-claude "Read .forge/spec.md. Add [describe your feature] following the rules in .forge/rules.md"
+# Install
+pip install forge-ai
+
+# Install your preferred AI provider SDK
+pip install anthropic          # or: pip install openai
+export ANTHROPIC_API_KEY=...   # or: export OPENAI_API_KEY=...
+
+# Create and build
+forge new my-app -t web-app
+cd my-app
+# Edit .forge/spec.md with your idea
+forge build
+
+# Run locally
+forge dev
 ```
-
-### "How do I fix a bug?"
-
-```bash
-claude "The app has this problem: [describe what's wrong]. Fix it."
-```
-
-### "How do I put it online?"
-
-Check `.forge/deploy.md` in your project — it has step-by-step instructions for your specific template.
-
-### "I want different tech choices"
-
-Edit `.forge/rules.md` to change the tech stack. For example, change "React" to "Vue" or "FastAPI" to "Flask".
 
 ---
 
 ## All Commands
 
 ```bash
-forge new my-project              # Create project (asks for template)
+# Project scaffolding
+forge new my-project              # Create project (prompts for template)
 forge new my-project -t web-app   # Create with specific template
 forge new --interactive           # Interactive mode with menu
 forge templates                   # List all available templates
 forge init                        # Add .forge/ to existing project
+
+# AI build pipeline
+forge build                       # Build project from spec
+forge build -p anthropic          # Use specific provider
+forge build -f "add feature X"   # Add feature to existing project
+forge build --no-review           # Skip review phase
+forge status                      # Show build progress and tasks
+
+# Development
+forge dev                         # Auto-detecting dev server
+forge dev --port 3000             # Custom port
+
+# Configuration
+forge config init                 # Create ~/.forge/config.yaml
+forge config show                 # Show current config
+forge config path                 # Print config file path
+
+# Deployment & sharing
 forge publish                     # Push to GitHub
+forge demo <url>                  # Generate QR code for demo
+
+# Hackathon tools
+forge sprint start                # Start sprint timer
+forge sprint status               # Check elapsed time and progress
+forge sprint wrap                 # Generate sprint summary
 ```
 
 ---
 
-## Example: Building a Todo App
+## Architecture
 
-```bash
-# 1. Create project
-forge new todo-app -t web-app
-cd todo-app
-
-# 2. Edit .forge/spec.md with this:
+```
+src/
+  cli.py                  # CLI entry point (forge command)
+  config.py               # Config management (~/.forge/config.yaml)
+  orchestrator.py         # Build pipeline: Plan -> Build -> Review
+  state.py                # Resumable build state (.forge/build-state.yaml)
+  context.py              # Token-budgeted project context assembly
+  providers/
+    base.py               # Provider ABC + retry logic
+    anthropic.py          # Anthropic Claude
+    openai_compat.py      # OpenAI / Together / Groq
+    ollama.py             # Local models via Ollama
+  agents/
+    base.py               # Agent base class + file extraction
+    planner.py            # Spec -> structured YAML task plan
+    coder.py              # Task -> complete file generation
+    reviewer.py           # Code validation + issue detection
 ```
 
-```markdown
-# Project: SimpleTodo
+### Design Principles
+
+- **Provider agnostic** -- Swap between Anthropic, OpenAI, local models with a flag
+- **Resumable** -- State persisted after every task; Ctrl+C and resume anytime
+- **Context aware** -- Token-budgeted context window management; each task sees what was built before it
+- **Template driven** -- Rules and constraints are per-template, not hardcoded
+- **Minimal dependencies** -- Core needs only `pyyaml`; provider SDKs are optional
+
+---
+
+## Configuration
+
+Forge auto-creates `~/.forge/config.yaml` on first run:
+
+```yaml
+providers:
+  - name: anthropic
+    api_key: ${ANTHROPIC_API_KEY}
+    model: claude-sonnet-4-20250514
+
+  - name: openai
+    api_key: ${OPENAI_API_KEY}
+    model: gpt-4o
+
+  - name: together
+    api_key: ${TOGETHER_API_KEY}
+    model: meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo
+
+  - name: ollama
+    base_url: http://localhost:11434
+    model: llama3.1
+```
+
+Forge picks the first provider with valid credentials. Override with `--provider`.
+
+---
+
+## Example: Full Workflow
+
+```bash
+# Create an API project
+forge new seo-analyzer -t api-only
+cd seo-analyzer
+
+# Write your spec
+cat > .forge/spec.md << 'EOF'
+# Project: SEO Analyzer
 
 ## What
-A minimal todo list app. No accounts, just a list that saves to the browser.
+A REST API that analyzes any website URL for SEO issues --
+checks meta tags, load times, heading structure, and link health.
 
 ## Users
-- Anyone who wants a quick todo list
+- Businesses trying to improve their search rankings
+- Developers validating their sites before launch
 
-## Features
-- [ ] Add todos with a text input
-- [ ] Mark todos as complete (strikethrough)
-- [ ] Delete todos
-- [ ] Todos persist when you refresh the page (localStorage)
+## Endpoints
+- POST /api/analyze - Submit a URL for analysis
+- GET /api/reports/{id} - Get analysis results
+- GET /api/reports - List recent analyses
 
 ## Vibe
-Super minimal. Just a text input and a list. No clutter.
+Fast, reliable, well-documented
+EOF
+
+# Build it
+forge build
+
+# Check what was built
+forge status
+
+# Run it
+forge dev
+
+# Add a feature later
+forge build --feature "add a score out of 100 for each analyzed page"
+
+# Ship it
+forge publish
 ```
 
+---
+
+## Manual Mode
+
+Don't want to use `forge build`? Forge also works as a scaffolding tool with any AI assistant:
+
+**Claude Code:**
 ```bash
-# 3. Build it
 claude "Read .forge/spec.md and .forge/rules.md, then build this project"
-
-# 4. Run it
-cd frontend && npm install && npm run dev
 ```
 
----
+**Cursor:** Open the project, press `Cmd+I`, type: "Read .forge/spec.md and rules.md, build this project"
 
-## Tips for Best Results
+**Aider:**
+```bash
+aider --read .forge/spec.md --read .forge/rules.md
+```
 
-1. **Be specific** — "Blue button in the top right" not "a button somewhere"
-2. **Include examples** — "Like Spotify's playlist page" helps AI understand
-3. **Start small** — Get basic version working, then add features
-4. **Iterate** — Build → Test → Improve → Repeat
-
----
-
-## Need Help?
-
-- Check `.forge/prompts.md` in your project for copy-paste AI commands
-- See [HACKATHON.md](HACKATHON.md) for hackathon-specific tips
-- [Report issues on GitHub](https://github.com/sundai-club/forge/issues)
+Each template includes `.forge/prompts.md` with copy-paste commands for common tasks.
 
 ---
 
@@ -281,11 +347,31 @@ cd frontend && npm install && npm run dev
 pip install forge-ai
 ```
 
+**With AI provider support:**
+```bash
+pip install "forge-ai[build]"      # All providers
+pip install "forge-ai[anthropic]"  # Anthropic only
+pip install "forge-ai[openai]"     # OpenAI only
+```
+
 **From source:**
 ```bash
 git clone https://github.com/sundai-club/forge
 cd forge
-pip install -e .
+pip install -e ".[build]"
+```
+
+---
+
+## Contributing
+
+Forge is MIT licensed. PRs welcome.
+
+```bash
+git clone https://github.com/sundai-club/forge
+cd forge
+pip install -e ".[dev,build]"
+pytest
 ```
 
 ---
