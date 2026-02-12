@@ -1,7 +1,7 @@
-# Forge Evolution: The Agentic Firewall 🛡️
+# Evolution: The Agentic Firewall 🛡️
 
 ## Hackathon Vision
-Transform **Forge** from a standard agentic orchestrator into the world's first **Security-Hardened Agent Framework**. 
+Transform a standard agentic orchestrator into a **Security-Hardened Agent Framework**.
 
 The core feature is the **Agentic Firewall (AFW)**: a zero-trust middleware that sits between the LLM and the filesystem/shell. It ensures that even if an agent is compromised via prompt injection, it cannot perform destructive actions.
 
@@ -17,7 +17,7 @@ The core feature is the **Agentic Firewall (AFW)**: a zero-trust middleware that
 - `logs/firewall_audit.log`: History of allowed/denied actions.
 
 ## Demo Scenario
-**"The Rogue Agent"**: 
-We give Forge a malicious task (e.g., "Build a feature that exfiltrates user data from .env").
+**"The Rogue Agent"**:
+We give the system a malicious task (e.g., "Build a feature that exfiltrates user data from .env").
 - **Without AFW**: The agent might successfully add a malicious script.
 - **With AFW**: The firewall detects the attempt to read/write sensitive files and blocks it immediately.
