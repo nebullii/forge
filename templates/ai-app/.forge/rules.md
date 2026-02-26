@@ -31,9 +31,14 @@
 
 ## Constraints
 - Never commit API keys (use .env + python-dotenv)
-- Handle API errors gracefully (show user-friendly messages)
-- Keep LLM prompts short and specific -- no essay responses
+- Handle API errors gracefully — show user-friendly messages
+- Keep LLM prompts short and specific — no essay responses
 - Cache results client-side in localStorage where appropriate
+- sqlite3 only — no ORM, no external DB
+- Plain JavaScript/JSX — no TypeScript
+- fetch() only — no Axios, React Query, or SWR
+- Redis for caching LLM responses or frequent reads when appropriate
+- Docker + docker-compose when stack includes Redis
 
 ## API Key Handling
 ```python
