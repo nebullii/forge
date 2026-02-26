@@ -6,13 +6,34 @@ Forge is an open-source CLI that turns a project spec into a working codebase us
 
 ```
                  spec.md + rules.md
-                        |
-                   [ Planner Agent ]  ── analyzes spec, creates task plan
-                        |
-                   [ Coder Agent ]    ── generates complete files per task
-                        |
-                   [ Reviewer Agent ] ── validates code, auto-fixes errors
-                        |
+                        │
+               ┌────────▼────────┐
+               │  ForgeOrchestrator │
+               └────────┬────────┘
+                        │
+           ┌────────────▼────────────┐
+           │     PlannerAgent        │  analyzes spec → task plan + tech decisions
+           └────────────┬────────────┘
+                        │
+          ┌─────────────┼─────────────┐
+          │             │             │  (parallel)
+    ┌─────▼──────┐ ┌────▼────┐ ┌─────▼──────┐
+    │BackendAgent│ │ CIAgent │ │DeployAgent │
+    └─────┬──────┘ └────┬────┘ └─────┬──────┘
+          └─────────────┼─────────────┘
+                        │
+           ┌────────────▼────────────┐
+           │    FrontendAgent        │  needs backend API contracts
+           └────────────┬────────────┘
+                        │
+           ┌────────────▼────────────┐
+           │    SecurityAgent        │  OWASP audit + code hardening
+           └────────────┬────────────┘
+                        │
+           ┌────────────▼────────────┐
+           │    ReviewerAgent        │  final validation + auto-fix
+           └────────────┬────────────┘
+                        │
                   working project/
 ```
 
@@ -30,80 +51,107 @@ forge new my-app -t web-app
 **2. Spec** -- Edit `.forge/spec.md` with what you want to build.
 
 ```markdown
-# Project: StudyBuddy
+# Project: My App
 
 ## What
-A flashcard app that helps students memorize vocabulary.
+A short description of what the app does.
 
 ## Features
-- Create flashcard decks with terms and definitions
-- Quiz mode with spaced repetition
-- Track which cards you get wrong most often
+- Feature one
+- Feature two
 
-## Vibe
-Simple, distraction-free, encouraging
+## Stack
+React frontend, FastAPI backend, SQLite
 ```
 
 **3. Build** -- One command. AI does the rest.
 
 ```bash
-forge build
+forge build          # classic mode: Planner → Coder → Reviewer
+forge build --adk    # ADK mode: 7 specialized agents + A2A protocol
 ```
 
-Forge reads your spec, plans the architecture, generates every file, reviews the code, and fixes issues -- all automatically.
+---
+
+## Build Modes
+
+### Classic Mode (`forge build`)
+
+Three-phase sequential pipeline. Fast, simple, works with any provider.
 
 ```
-Building with anthropic (claude-sonnet-4-20250514)...
-
 Phase 1: Planning...
    Plan: 5 tasks
-     - Set up backend structure and dependencies
-     - Create database models and API routes
-     - Set up frontend with React and Tailwind
-     - Build flashcard components and quiz mode
-     - Integration, README, and environment config
+     - Set up backend with FastAPI and SQLite
+     - Add LLM-powered analysis endpoints
+     - Build React frontend with team selector
+     - Add head-to-head comparison
+     - Client-side caching
 
 Phase 2: Building...
-   [1/5] Set up backend structure and dependencies
+   [1/5] Set up backend with FastAPI and SQLite
       + backend/main.py
-      + backend/requirements.txt
-      + backend/db.py
-   [2/5] Create database models and API routes
-      + backend/routes/decks.py
-      + backend/routes/cards.py
-   [3/5] Set up frontend with React and Tailwind
-      + frontend/package.json
-      + frontend/vite.config.js
-      + frontend/src/App.jsx
-   [4/5] Build flashcard components and quiz mode
-      + frontend/src/components/DeckList.jsx
-      + frontend/src/components/FlashCard.jsx
-      + frontend/src/components/QuizMode.jsx
-   [5/5] Integration, README, and environment config
-      + README.md
-      + .env.example
+      + backend/models.py
+   ...
 
 Phase 3: Reviewing...
    Review passed.
+```
 
-Build complete!
+### ADK Mode (`forge build --adk`)
+
+Seven specialized agents coordinated by a Google ADK orchestrator via the A2A protocol. Independent agents (Backend, CI/CD, Deploy) run in parallel.
+
+```
+Phase 1-7: ADK Multi-Agent Pipeline
+  PlannerAgent → BackendAgent → FrontendAgent →
+  SecurityAgent → CIAgent → DeployAgent → ReviewerAgent
+
+  [ADK] → call_planner(...)
+  [ADK] ← planner: Plan ready. 6 tasks. Stack: {"backend": "FastAPI", ...}
+  [ADK] → run_parallel_agents("backend,ci,deploy", ...)
+  [ADK] ← backend: Backend complete. 8 files: backend/main.py, ...
+  [ADK] ← ci: CI/CD complete. 3 files: .github/workflows/ci.yml, ...
+  [ADK] ← deploy: Deploy config complete. 3 files: railway.toml, ...
+  [ADK] → call_frontend_agent(...)
+  [ADK] → call_security_agent()
+  [ADK] → call_reviewer_agent(...)
 ```
 
 ---
 
 ## Key Features
 
-### Multi-Agent Orchestrator
+### Specialized Agent Pipeline
 
-Forge doesn't just dump your spec into a single prompt. It runs a **three-phase pipeline**:
+Each agent has a dedicated role and system prompt:
 
-- **Planner Agent** -- Analyzes your spec and rules, produces a structured task plan (3-8 tasks ordered by dependency)
-- **Coder Agent** -- Executes each task sequentially, generating complete files with full context of what's been built so far
-- **Reviewer Agent** -- Validates all generated code for missing imports, broken API contracts, and security issues. Auto-fixes errors.
+| Agent | Role |
+|-------|------|
+| **PlannerAgent** | Analyzes spec → structured task plan + tech stack decisions |
+| **BackendAgent** | FastAPI routes, database models, service layer |
+| **FrontendAgent** | React components, routing, state, API integration |
+| **SecurityAgent** | OWASP Top 10 audit, secret detection, code hardening |
+| **CIAgent** | GitHub Actions workflows, Dockerfile, docker-compose |
+| **DeployAgent** | Railway, Render, Vercel, or Fly.io deployment configs |
+| **ReviewerAgent** | Cross-file correctness, broken imports, API contract validation |
+
+### A2A Protocol
+
+In ADK mode, agents communicate using Google's [Agent-to-Agent (A2A)](https://google.github.io/A2A/) open protocol. All agents run in-process — no servers to manage. The orchestrator routes tasks to each agent via A2A message passing, and independent agents (Backend, CI, Deploy) run in parallel using a thread pool.
+
+### Agentic Firewall
+
+Every file write is validated against `.forge/firewall_policy.json` before being written to disk:
+
+- **Allowlist paths**: only `src/`, `backend/`, `frontend/`, etc. are writable
+- **Blocklist paths**: `.env`, `.ssh/`, `*.pem` are immutable for agents
+- **Pattern scanning**: rejects code containing `eval()`, `exec()`, `os.system()`
+- **Audit log**: all decisions recorded in `.forge/firewall_audit.log`
 
 ### Provider Agnostic
 
-Works with any LLM backend. Set an environment variable and go:
+Works with any LLM backend:
 
 | Provider | Setup |
 |----------|-------|
@@ -128,28 +176,16 @@ forge build    # Resumes from where it stopped
 forge status   # See what's done and what's pending
 ```
 
-### Agentic Firewall (AFW) 🛡️
-
-Forge includes a general-purpose **Agentic Firewall** that works for any app you generate. Every tool call and file write is intercepted to enforce a "Least Privilege" sandbox:
-- **Zero-Trust Validation**: Every file change is checked against `.forge/firewall_policy.json`.
-- **Protected Paths**: Critical files like `.env` and `.ssh/` are immutable for agents.
-- **Malicious Pattern Scanning**: AFW scans generated code for dangerous primitives like `eval()` and `os.system()` before writing to disk.
-- **Audit Logging**: All security decisions are recorded in `.forge/firewall_audit.log`.
-
 ### Incremental Features
 
-Already have a working project? Add features without rebuilding:
+Already have a working project? Add features without rebuilding everything:
 
 ```bash
 forge build --feature "add user authentication with email/password"
 forge build --feature "add dark mode toggle"
 ```
 
-The planner analyzes your existing code and plans only the changes needed.
-
 ### 8 Production-Ready Templates
-
-Each template includes a pre-configured `.forge/` directory with tech stack rules, deployment guides, and AI prompts:
 
 | Template | Stack |
 |----------|-------|
@@ -170,15 +206,20 @@ Each template includes a pre-configured `.forge/` directory with tech stack rule
 # Install
 pip install forge-ai
 
-# Install your preferred AI provider SDK
-pip install anthropic          # or: pip install openai
-export ANTHROPIC_API_KEY=...   # or: export OPENAI_API_KEY=...
+# For ADK multi-agent mode
+pip install "forge-ai[adk]"
+
+# Set up provider
+export ANTHROPIC_API_KEY=...   # or OPENAI_API_KEY, etc.
 
 # Create and build
 forge new my-app -t web-app
 cd my-app
 # Edit .forge/spec.md with your idea
 forge build
+
+# Or use the full multi-agent pipeline
+forge build --adk
 
 # Run locally
 forge dev
@@ -197,9 +238,10 @@ forge templates                   # List all available templates
 forge init                        # Add .forge/ to existing project
 
 # AI build pipeline
-forge build                       # Build project from spec
+forge build                       # Build project from spec (classic)
+forge build --adk                 # Build using ADK multi-agent pipeline
 forge build -p anthropic          # Use specific provider
-forge build -f "add feature X"   # Add feature to existing project
+forge build -f "add feature X"    # Add feature to existing project
 forge build --no-review           # Skip review phase
 forge status                      # Show build progress and tasks
 
@@ -212,11 +254,8 @@ forge config init                 # Create ~/.forge/config.yaml
 forge config show                 # Show current config
 forge config path                 # Print config file path
 
-# Deployment & sharing
+# Publish
 forge publish                     # Push to GitHub
-forge demo <url>                  # Generate QR code for demo
-
-# Hackathon tools
 forge sprint start                # Start sprint timer
 forge sprint status               # Check elapsed time and progress
 forge sprint wrap                 # Generate sprint summary
@@ -228,30 +267,48 @@ forge sprint wrap                 # Generate sprint summary
 
 ```
 src/
-  cli.py                  # CLI entry point (forge command)
-  config.py               # Config management (~/.forge/config.yaml)
-  orchestrator.py         # Build pipeline: Plan -> Build -> Review
-  state.py                # Resumable build state (.forge/build-state.yaml)
-  context.py              # Token-budgeted project context assembly
+  cli.py                    # CLI entry point (forge command)
+  config.py                 # Config management (~/.forge/config.yaml)
+  orchestrator.py           # Build pipeline: Plan → Build → Review (+ ADK mode)
+  state.py                  # Resumable build state (.forge/build-state.yaml)
+  context.py                # Token-budgeted project context assembly
+  sprint.py                 # Sprint timer
   providers/
-    base.py               # Provider ABC + retry logic
-    anthropic.py          # Anthropic Claude
-    openai_compat.py      # OpenAI / Together / Groq
-    ollama.py             # Local models via Ollama
+    base.py                 # Provider ABC + retry logic
+    anthropic.py            # Anthropic Claude
+    openai_compat.py        # OpenAI / Together / Groq
+    ollama.py               # Local models via Ollama
   agents/
-    base.py               # Agent base class + file extraction
-    planner.py            # Spec -> structured YAML task plan
-    coder.py              # Task -> complete file generation
-    reviewer.py           # Code validation + issue detection
+    base.py                 # BaseAgent: invoke, extract_files, A2A hooks
+    planner.py              # Spec → structured task plan
+    coder.py                # Task → complete file generation (classic mode)
+    reviewer.py             # Code validation + issue detection
+    backend.py              # FastAPI backend generation
+    frontend.py             # React frontend generation
+    security_agent.py       # OWASP audit + code hardening
+    ci_cd.py                # GitHub Actions, Dockerfile, docker-compose
+    deploy.py               # Railway / Render / Vercel / Fly.io configs
+  a2a/
+    types.py                # A2A protocol models (Task, Message, TaskResult, ...)
+    client.py               # A2AClient: in-process or HTTP transport
+    server.py               # FastAPI A2A server factory
+  adk/
+    llm_bridge.py           # Wraps Forge BaseProvider as Google ADK BaseLlm
+    agent_runner.py         # ADKAgentRunner: bridges LlmAgent ↔ A2A protocol
+    orchestrator_agent.py   # Root ADK LlmAgent orchestrator
+    tools.py                # ADK tool functions + run_parallel_agents
+  security/
+    firewall.py             # Agentic Firewall: policy enforcement + audit log
 ```
 
 ### Design Principles
 
-- **Provider agnostic** -- Swap between Anthropic, OpenAI, local models with a flag
-- **Resumable** -- State persisted after every task; Ctrl+C and resume anytime
-- **Context aware** -- Token-budgeted context window management; each task sees what was built before it
-- **Template driven** -- Rules and constraints are per-template, not hardcoded
-- **Minimal dependencies** -- Core needs only `pyyaml`; provider SDKs are optional
+- **Provider agnostic** -- swap between Anthropic, OpenAI, local models with a flag
+- **Two modes** -- classic (simple, fast) or ADK (parallel, specialized agents)
+- **A2A compatible** -- every agent is a standalone A2A service; run distributed or in-process
+- **Resumable** -- state persisted after every task; Ctrl+C and resume anytime
+- **Zero-trust writes** -- Agentic Firewall validates every file before it touches disk
+- **Minimal core** -- classic mode needs only `pyyaml`; ADK extras are opt-in
 
 ---
 
@@ -282,91 +339,20 @@ Forge picks the first provider with valid credentials. Override with `--provider
 
 ---
 
-## Example: Full Workflow
-
-```bash
-# Create an API project
-forge new seo-analyzer -t api-only
-cd seo-analyzer
-
-# Write your spec
-cat > .forge/spec.md << 'EOF'
-# Project: SEO Analyzer
-
-## What
-A REST API that analyzes any website URL for SEO issues --
-checks meta tags, load times, heading structure, and link health.
-
-## Users
-- Businesses trying to improve their search rankings
-- Developers validating their sites before launch
-
-## Endpoints
-- POST /api/analyze - Submit a URL for analysis
-- GET /api/reports/{id} - Get analysis results
-- GET /api/reports - List recent analyses
-
-## Vibe
-Fast, reliable, well-documented
-EOF
-
-# Build it
-forge build
-
-# Check what was built
-forge status
-
-# Run it
-forge dev
-
-# Add a feature later
-forge build --feature "add a score out of 100 for each analyzed page"
-
-# Ship it
-forge publish
-```
-
----
-
-## Manual Mode
-
-Don't want to use `forge build`? Forge also works as a scaffolding tool with any AI assistant:
-
-**Claude Code:**
-```bash
-claude "Read .forge/spec.md and .forge/rules.md, then build this project"
-```
-
-**Cursor:** Open the project, press `Cmd+I`, type: "Read .forge/spec.md and rules.md, build this project"
-
-**Aider:**
-```bash
-aider --read .forge/spec.md --read .forge/rules.md
-```
-
-Each template includes `.forge/prompts.md` with copy-paste commands for common tasks.
-
----
-
 ## Install Options
 
-**pip (recommended):**
 ```bash
-pip install forge-ai
-```
-
-**With AI provider support:**
-```bash
-pip install "forge-ai[build]"      # All providers
-pip install "forge-ai[anthropic]"  # Anthropic only
-pip install "forge-ai[openai]"     # OpenAI only
+pip install forge-ai                  # Core (classic mode only)
+pip install "forge-ai[build]"         # Core + all LLM providers
+pip install "forge-ai[adk]"           # ADK multi-agent mode
+pip install "forge-ai[build,adk]"     # Everything
 ```
 
 **From source:**
 ```bash
 git clone https://github.com/sundai-club/forge
 cd forge
-pip install -e ".[build]"
+pip install -e ".[build,adk]"
 ```
 
 ---
@@ -381,7 +367,3 @@ cd forge
 pip install -e ".[dev,build]"
 pytest
 ```
-
----
-
-Made with coffee by [Sundai Club](https://sundai.club)

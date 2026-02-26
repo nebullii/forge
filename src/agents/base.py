@@ -2,6 +2,7 @@
 
 import re
 from pathlib import Path
+from typing import Optional
 
 from ..providers.base import BaseProvider
 
@@ -11,10 +12,17 @@ class BaseAgent:
 
     Each agent has a role (system prompt), can construct prompts from context,
     and can extract file blocks from LLM responses.
+
+    A2A support:
+      - skill_description: short description of what this agent does
+      - handle_a2a_task(task): A2A entry point
+      - get_agent_card(host, port): returns AgentCard for /.well-known/agent.json
+      - serve(port): starts a FastAPI A2A server
     """
 
     role: str = "You are a helpful AI assistant."
     name: str = "base"
+    skill_description: str = "A general-purpose Forge build agent."
 
     def __init__(self, provider: BaseProvider, project_root: Path):
         self.provider = provider
@@ -111,3 +119,106 @@ class BaseAgent:
             full_path.write_text(content)
             written.append(filepath)
         return written
+
+    # -------------------------------------------------------------------------
+    # A2A Protocol support
+    # -------------------------------------------------------------------------
+
+    def handle_a2a_task(self, task) -> "TaskResult":
+        """A2A entry point: process a Task and return a TaskResult.
+
+        Subclasses may override this for specialized behavior.
+        The default implementation:
+          1. Extracts the text prompt from task.message
+          2. Calls self.invoke(prompt)
+          3. Extracts any file blocks from the response
+          4. Returns a TaskResult with text + file artifacts
+        """
+        from ..a2a.types import TaskResult, TaskStatus, Artifact, TextPart, FilePart, Message
+
+        try:
+            # Extract prompt text from task message parts
+            prompt_parts = []
+            for part in task.message.parts:
+                if hasattr(part, "text"):
+                    prompt_parts.append(part.text)
+            prompt = "\n".join(prompt_parts)
+
+            # Inject context if provided
+            if task.context:
+                context_str = self._format_context(task.context)
+                if context_str:
+                    prompt = f"{prompt}\n\n{context_str}"
+
+            response = self.invoke(prompt)
+            files = self.extract_files(response)
+
+            artifacts = []
+
+            # Text artifact (the full response)
+            artifacts.append(Artifact(
+                type="text",
+                name="response",
+                parts=[TextPart(text=response)],
+            ))
+
+            # File artifacts
+            if files:
+                file_parts = [FilePart(path=fp, content=content) for fp, content in files]
+                artifacts.append(Artifact(
+                    type="files",
+                    name="generated_files",
+                    parts=file_parts,
+                ))
+
+            return TaskResult(
+                id=task.id,
+                status=TaskStatus.completed,
+                artifacts=artifacts,
+            )
+        except Exception as e:
+            from ..a2a.types import TaskResult, TaskStatus
+            return TaskResult(
+                id=task.id,
+                status=TaskStatus.failed,
+                error=str(e),
+            )
+
+    def _format_context(self, context: dict) -> str:
+        """Format a context dict into a prompt section."""
+        parts = []
+        for key, value in context.items():
+            if key == "files" and isinstance(value, dict):
+                # Skip large file dumps unless specifically needed
+                parts.append(f"## Existing Files\n{', '.join(value.keys())}")
+            elif isinstance(value, str) and value:
+                label = key.replace("_", " ").title()
+                parts.append(f"## {label}\n{value}")
+            elif isinstance(value, (list, dict)):
+                import json
+                label = key.replace("_", " ").title()
+                parts.append(f"## {label}\n{json.dumps(value, indent=2)}")
+        return "\n\n".join(parts)
+
+    def get_agent_card(self, host: str = "localhost", port: int = 8100):
+        """Return an A2A AgentCard describing this agent."""
+        from ..a2a.types import AgentCard, AgentSkill
+        return AgentCard(
+            name=self.name,
+            description=self.skill_description,
+            url=f"http://{host}:{port}",
+            version="0.1.0",
+            capabilities={"streaming": False, "pushNotifications": False},
+            skills=[
+                AgentSkill(
+                    id=f"{self.name}-main",
+                    name=self.name,
+                    description=self.skill_description,
+                )
+            ],
+        )
+
+    def serve(self, port: int = 8100, host: str = "0.0.0.0"):
+        """Start an A2A-compatible HTTP server for this agent."""
+        from ..a2a.server import serve_agent
+        serve_agent(self, host=host, port=port)

@@ -5,9 +5,64 @@ import yaml
 
 from .base import BaseAgent
 
+# ── ADK agent factory ─────────────────────────────────────────────────────────
+
+ADK_INSTRUCTION = """\
+You are Forge Reviewer, a code review specialist. You check generated code
+for correctness, consistency, and completeness.
+
+You look for:
+- Missing imports or undefined references
+- Inconsistent API contracts (frontend calls endpoint that backend does not define)
+- Missing files that are imported or referenced
+- Security issues (hardcoded secrets, SQL injection, etc.)
+- Missing error handling for critical paths
+
+Output your review as YAML:
+
+passed: true/false
+issues:
+  - file: "path/to/file"
+    severity: error/warning
+    message: "Description of the issue"
+
+If no issues found:
+
+passed: true
+issues: []
+
+Output ONLY the YAML.
+"""
+
+
+def create_reviewer_agent(llm):
+    """Create a Google ADK LlmAgent for the Reviewer role.
+
+    Args:
+        llm: A google.adk BaseLlm instance (e.g. from create_forge_llm())
+
+    Returns:
+        google.adk.agents.LlmAgent
+    """
+    try:
+        from google.adk.agents import LlmAgent
+    except ImportError:
+        raise ImportError("google-adk required. Install: pip install 'forge-ai[adk]'")
+
+    return LlmAgent(
+        name="forge-reviewer",
+        description="Reviews all generated code for correctness, consistency, and security.",
+        model=llm,
+        instruction=ADK_INSTRUCTION,
+    )
+
 
 class ReviewerAgent(BaseAgent):
     name = "reviewer"
+    skill_description = (
+        "Cross-cutting code review: validates correctness, consistency, "
+        "API contracts, imports, and security across all generated files."
+    )
     role = (
         "You are Forge Reviewer, a code review specialist. You check generated code "
         "for correctness, consistency, and completeness.\n\n"
@@ -69,6 +124,38 @@ Output ONLY the YAML."""
 
         response = self.invoke(prompt)
         return self._parse_review(response)
+
+    def handle_a2a_task(self, task):
+        """A2A entry point for code review."""
+        from ..a2a.types import TaskResult, TaskStatus, Artifact, TextPart
+        import yaml as _yaml
+
+        context = task.context or {}
+        files = context.get("files", {})
+        spec = context.get("spec", "")
+        rules = context.get("rules", "")
+
+        if files:
+            review = self.review_files(files, spec, rules)
+        else:
+            prompt_parts = [p.text for p in task.message.parts if hasattr(p, "text")]
+            response = self.invoke("\n".join(prompt_parts))
+            review = self._parse_review(response)
+
+        review_text = _yaml.dump(review, default_flow_style=False)
+
+        return TaskResult(
+            id=task.id,
+            status=TaskStatus.completed,
+            artifacts=[
+                Artifact(
+                    type="review",
+                    name="code_review",
+                    parts=[TextPart(text=review_text)],
+                    data=review,
+                )
+            ],
+        )
 
     def _parse_review(self, response: str) -> dict:
         text = response.strip()

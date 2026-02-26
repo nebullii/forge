@@ -6,9 +6,70 @@ from pathlib import Path
 
 from .base import BaseAgent
 
+# ── ADK agent factory ─────────────────────────────────────────────────────────
+
+ADK_INSTRUCTION = """\
+You are Forge Planner, a software architect that analyzes project specifications
+and creates structured build plans.
+
+You make practical technology decisions, preferring boring/proven technology.
+Optimize for simplicity, free-tier deployment, and fast iteration.
+
+When outputting a plan, use this EXACT YAML format — no markdown fences:
+
+decisions:
+  stack:
+    language: "..."
+    framework: "..."
+    database: "..."
+    styling: "..."
+  architecture: "Brief description of how components connect"
+  reasoning: "1-2 sentences on why these choices"
+
+tasks:
+  - id: task_01
+    name: "Set up project structure and dependencies"
+    description: "Create the project skeleton with package manifests and config files"
+    agent: coder
+    files: [requirements.txt, main.py]
+  - id: task_02
+    name: "..."
+    description: "..."
+    agent: coder
+    files: [...]
+
+Output ONLY the YAML, nothing else.
+"""
+
+
+def create_planner_agent(llm):
+    """Create a Google ADK LlmAgent for the Planner role.
+
+    Args:
+        llm: A google.adk BaseLlm instance (e.g. from create_forge_llm())
+
+    Returns:
+        google.adk.agents.LlmAgent
+    """
+    try:
+        from google.adk.agents import LlmAgent
+    except ImportError:
+        raise ImportError("google-adk required. Install: pip install 'forge-ai[adk]'")
+
+    return LlmAgent(
+        name="forge-planner",
+        description="Analyzes project specs and produces a structured build plan with tech stack decisions.",
+        model=llm,
+        instruction=ADK_INSTRUCTION,
+    )
+
 
 class PlannerAgent(BaseAgent):
     name = "planner"
+    skill_description = (
+        "Analyzes project specs and produces a structured build plan with "
+        "tech stack decisions and ordered task list."
+    )
     role = (
         "You are Forge Planner, a software architect that analyzes project "
         "specifications and creates structured build plans.\n\n"
@@ -119,6 +180,41 @@ tasks:
     files: [...]
 
 Output ONLY the YAML, nothing else."""
+
+    def handle_a2a_task(self, task):
+        """A2A entry point: produces a structured plan as a TaskResult."""
+        from ..a2a.types import TaskResult, TaskStatus, Artifact, TextPart
+
+        context = task.context or {}
+        prompt_parts = [p.text for p in task.message.parts if hasattr(p, "text")]
+        prompt_text = "\n".join(prompt_parts)
+
+        # Extract spec/rules from the prompt text or context
+        spec = context.get("spec", "")
+        rules = context.get("rules", "")
+        if not spec:
+            spec = prompt_text  # use the full prompt as spec
+
+        try:
+            plan = self.analyze_and_plan(spec, rules)
+            plan_text = f"Tasks: {len(plan.get('tasks', []))}\n"
+            for t in plan.get("tasks", []):
+                plan_text += f"  - {t.get('name', '')}\n"
+
+            return TaskResult(
+                id=task.id,
+                status=TaskStatus.completed,
+                artifacts=[
+                    Artifact(
+                        type="plan",
+                        name="build_plan",
+                        parts=[TextPart(text=plan_text)],
+                        data=plan,
+                    )
+                ],
+            )
+        except Exception as e:
+            return TaskResult(id=task.id, status=TaskStatus.failed, error=str(e))
 
     def _parse_plan(self, response: str) -> dict:
         """Parse the YAML plan from the LLM response."""

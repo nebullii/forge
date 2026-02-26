@@ -11,6 +11,7 @@ from typing import Optional
 from .providers import create_provider
 from .providers.base import ProviderConfig
 from .agents import PlannerAgent, CoderAgent, ReviewerAgent
+from .agents import BackendAgent, FrontendAgent, SecurityAgent, CIAgent, DeployAgent
 from .security.firewall import AgenticFirewall
 from .state import (
     BuildState, TaskState, load_build_state, save_build_state, compute_spec_hash,
@@ -35,16 +36,21 @@ class BuildOrchestrator:
         forge_path: Path,
         review: bool = True,
         verbose: bool = False,
+        use_adk: bool = False,
     ):
         self.forge_path = forge_path
         self.project_root = forge_path.parent
         self.review = review
         self.verbose = verbose
+        self.use_adk = use_adk
 
         self.provider = create_provider(provider_config)
         self.planner = PlannerAgent(self.provider, self.project_root)
         self.coder = CoderAgent(self.provider, self.project_root)
         self.reviewer = ReviewerAgent(self.provider, self.project_root) if review else None
+
+        # ADK specialized agents (initialized lazily in ADK mode)
+        self._adk_agents = None
 
         self.firewall = AgenticFirewall(
             policy_path=self.forge_path / "firewall_policy.json",
@@ -53,6 +59,53 @@ class BuildOrchestrator:
 
         self.state = load_build_state(forge_path)
         self.provider_config = provider_config
+
+    def _init_adk_agents(self) -> dict:
+        """Initialize all specialized agents as ADK LlmAgent + ADKAgentRunner instances."""
+        if self._adk_agents is not None:
+            return self._adk_agents
+
+        from .adk.llm_bridge import create_forge_llm
+        from .adk.agent_runner import ADKAgentRunner
+        from .agents import (
+            create_planner_agent, create_backend_agent, create_frontend_agent,
+            create_security_agent, create_ci_agent, create_deploy_agent,
+            create_reviewer_agent,
+        )
+
+        llm = create_forge_llm(self.provider)
+
+        self._adk_agents = {
+            "planner": ADKAgentRunner(
+                create_planner_agent(llm), name="planner",
+                skill_description="Analyzes spec and produces a structured build plan.",
+            ),
+            "backend": ADKAgentRunner(
+                create_backend_agent(llm), name="backend",
+                skill_description="Generates FastAPI backend: routes, models, services.",
+            ),
+            "frontend": ADKAgentRunner(
+                create_frontend_agent(llm), name="frontend",
+                skill_description="Generates React/TypeScript frontend with API integration.",
+            ),
+            "security": ADKAgentRunner(
+                create_security_agent(llm), name="security",
+                skill_description="OWASP security audit and code hardening.",
+            ),
+            "ci": ADKAgentRunner(
+                create_ci_agent(llm), name="ci",
+                skill_description="Generates GitHub Actions workflows, Dockerfile, docker-compose.",
+            ),
+            "deploy": ADKAgentRunner(
+                create_deploy_agent(llm), name="deploy",
+                skill_description="Generates deployment configs for Railway, Render, Vercel, Fly.io.",
+            ),
+            "reviewer": ADKAgentRunner(
+                create_reviewer_agent(llm), name="reviewer",
+                skill_description="Reviews all generated code for correctness and consistency.",
+            ),
+        }
+        return self._adk_agents
 
     def run(self, feature: Optional[str] = None):
         """Run the build (or incremental feature addition)."""
@@ -66,6 +119,10 @@ class BuildOrchestrator:
             print("Edit it with your project description first.")
             sys.exit(1)
 
+        if self.use_adk:
+            self._run_adk(spec, rules)
+            return
+
         if self._can_resume(spec):
             print("Resuming previous build...")
             print("")
@@ -77,6 +134,74 @@ class BuildOrchestrator:
 
         if self.review and self.reviewer:
             self._phase_review(spec, rules)
+
+        self.state.status = "completed"
+        self.state.completed_at = datetime.now().isoformat()
+        self._save_state()
+
+    def _run_adk(self, spec: str, rules: str):
+        """Run the build using the ADK + A2A multi-agent pipeline."""
+        from .adk.orchestrator_agent import ForgeADKOrchestrator
+
+        self._init_state(spec)
+        self.state.status = "building"
+        self._save_state()
+
+        print("Phase 1-7: ADK Multi-Agent Pipeline")
+        print("  PlannerAgent → BackendAgent → FrontendAgent →")
+        print("  SecurityAgent → CIAgent → DeployAgent → ReviewerAgent")
+        print("")
+
+        agents = self._init_adk_agents()
+        orchestrator = ForgeADKOrchestrator(
+            provider=self.provider,
+            forge_path=self.forge_path,
+            agents=agents,
+        )
+
+        result = orchestrator.run(spec, rules, verbose=self.verbose)
+
+        # Surface agent errors before writing anything
+        errors = result.get("errors", [])
+        for err in errors:
+            print(f"   WARNING: {err}")
+
+        # Abort if planning itself failed — nothing useful to write
+        if errors and not result.get("files_written"):
+            self.state.status = "failed"
+            self.state.completed_at = datetime.now().isoformat()
+            self._save_state()
+            raise RuntimeError(f"ADK build failed: {errors[0]}")
+
+        # Write all generated files through the firewall
+        all_files = result.get("files_written", [])
+        written = []
+        for filepath, content in all_files:
+            permitted, reason = self.firewall.validate_file_write(filepath, content)
+            if permitted:
+                try:
+                    self.coder.write_files([(filepath, content)])
+                    written.append(filepath)
+                    print(f"   + {filepath}")
+                except Exception as e:
+                    print(f"   ERROR writing {filepath}: {e}")
+                    self.state.errors.append(f"Write error {filepath}: {e}")
+            else:
+                print(f"   FIREWALL BLOCK: {filepath} ({reason})")
+                self.state.errors.append(f"Firewall blocked {filepath}: {reason}")
+
+        self.state.files_written.extend(written)
+
+        # Print review summary if available
+        review = result.get("review")
+        if review and isinstance(review, dict):
+            passed = review.get("passed")
+            issues = review.get("issues", [])
+            if passed is True:
+                print("\nReview: passed")
+            elif issues:
+                print(f"\nReview: {len(issues)} issue(s) found")
+            print("")
 
         self.state.status = "completed"
         self.state.completed_at = datetime.now().isoformat()
@@ -293,7 +418,6 @@ class BuildOrchestrator:
             r"\bssh\b",
             r"\bcredential(s)?\b",
             r"\bupload\b",
-            r"\bpost\b",
             r"\btransfer\b",
             r"\bsend to\b",
             r"\bhttp(s)?://\b",

@@ -5,7 +5,6 @@ import sys
 import shutil
 import argparse
 import subprocess
-import webbrowser
 from pathlib import Path
 
 import yaml
@@ -199,38 +198,6 @@ def cmd_sprint(args):
         print("Usage: forge sprint <start|status|wrap>")
 
 
-def cmd_demo(args):
-    """Generate demo QR code for a URL."""
-    url = args.url
-
-    if not url:
-        # Try to get from sundai.yaml
-        sundai_path = Path(FORGE_DIR) / "sundai.yaml"
-        if sundai_path.exists():
-            with open(sundai_path) as f:
-                config = yaml.safe_load(f) or {}
-                url = config.get("deployed_url")
-
-    if not url:
-        print("Usage: forge demo <url>")
-        print("   or: forge demo (if URL saved from previous deploy)")
-        return
-
-    try:
-        import qrcode
-        qr = qrcode.QRCode(version=1, box_size=10, border=4)
-        qr.add_data(url)
-        qr.make(fit=True)
-        img = qr.make_image(fill_color="black", back_color="white")
-        qr_path = Path("demo-qr.png")
-        img.save(qr_path)
-        print(f"QR code saved: {qr_path}")
-    except ImportError:
-        print("QR code requires: pip install 'qrcode[pil]'")
-
-    print(f"URL: {url}")
-    webbrowser.open(url)
-
 
 def cmd_templates(args):
     """List available project templates."""
@@ -266,8 +233,12 @@ def cmd_build(args):
     feature = getattr(args, 'feature', None)
     no_review = getattr(args, 'no_review', False)
     verbose = getattr(args, 'verbose', False)
+    use_adk = getattr(args, 'adk', False)
 
-    print(f"Building with {provider_config}...")
+    if use_adk:
+        print(f"Building with {provider_config} [ADK multi-agent mode]...")
+    else:
+        print(f"Building with {provider_config}...")
     print("")
 
     orchestrator = BuildOrchestrator(
@@ -275,6 +246,7 @@ def cmd_build(args):
         forge_path=forge_path,
         review=not no_review,
         verbose=verbose,
+        use_adk=use_adk,
     )
 
     try:
@@ -290,6 +262,7 @@ def cmd_build(args):
     except Exception as e:
         print(f"Build failed: {e}")
         sys.exit(1)
+
 
 
 def cmd_config(args):
@@ -416,11 +389,6 @@ def main():
     sprint_parser.add_argument("sprint_cmd", choices=["start", "status", "wrap"], help="Sprint command")
     sprint_parser.set_defaults(func=cmd_sprint)
 
-    # forge demo
-    demo_parser = subparsers.add_parser("demo", help="Generate demo QR code")
-    demo_parser.add_argument("url", nargs="?", help="URL to generate QR for")
-    demo_parser.set_defaults(func=cmd_demo)
-
     # forge publish
     publish_parser = subparsers.add_parser("publish", help="Publish to GitHub")
     publish_parser.set_defaults(func=cmd_publish)
@@ -431,6 +399,8 @@ def main():
     build_parser.add_argument("--feature", "-f", help="Add a specific feature (incremental build)")
     build_parser.add_argument("--no-review", action="store_true", help="Skip review phase")
     build_parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
+    build_parser.add_argument("--adk", action="store_true",
+                              help="Use ADK multi-agent pipeline (Backend, Frontend, Security, CI, Deploy)")
     build_parser.set_defaults(func=cmd_build)
 
     # forge config
