@@ -1,46 +1,63 @@
 # Deployment Guide
 
-## Option 1: Railway (Recommended)
+## Render (Recommended)
 
-Best for AI apps because it handles secrets well.
+Best for full-stack apps with a `render.yaml` Blueprint.
+
+### Using render.yaml (one-click)
+
+1. Add a `render.yaml` to your project root:
+   ```yaml
+   services:
+     - type: web
+       name: my-app-backend
+       runtime: python
+       buildCommand: pip install -r backend/requirements.txt
+       startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+       envVars:
+         - key: OPENAI_API_KEY
+           sync: false
+
+     - type: web
+       name: my-app-frontend
+       runtime: static
+       buildCommand: cd frontend && npm install && npm run build
+       staticPublishPath: frontend/dist
+       envVars:
+         - key: VITE_API_URL
+           sync: false
+       routes:
+         - type: rewrite
+           source: /*
+           destination: /index.html
+   ```
+2. Go to [render.com](https://render.com) > "New" > "Blueprint"
+3. Connect your GitHub repo -- Render reads `render.yaml` automatically
+4. Set environment variables when prompted:
+   - `OPENAI_API_KEY` -- your API key
+   - `VITE_API_URL` -- the backend service URL (e.g. `https://my-app-backend.onrender.com`)
+5. Deploy
+
+### Manual setup
+
+1. **Backend**: "New" > "Web Service"
+   - Build: `pip install -r backend/requirements.txt`
+   - Start: `uvicorn backend.main:app --host 0.0.0.0 --port $PORT`
+   - Add `OPENAI_API_KEY` in Environment tab
+2. **Frontend**: "New" > "Static Site"
+   - Build: `cd frontend && npm install && npm run build`
+   - Publish dir: `frontend/dist`
+   - Add `VITE_API_URL` pointing to backend URL
+   - Add rewrite rule: `/*` -> `/index.html`
+
+---
+
+## Alternative: Railway
 
 1. Go to [railway.app](https://railway.app)
-2. Click "New Project" > "Deploy from GitHub"
-3. Select your repo
-4. **Important**: Add API keys as environment variables:
-   ```
-   OPENAI_API_KEY=sk-...
-   # or
-   ANTHROPIC_API_KEY=sk-ant-...
-   ```
-5. Get your public URL
-
----
-
-## Option 2: Vercel + Railway
-
-### Backend (Railway)
-1. Deploy backend to Railway
-2. Add API keys as environment variables
-3. Copy the deployed URL
-
-### Frontend (Vercel)
-1. Deploy frontend to Vercel
-2. Add `VITE_API_URL` pointing to Railway backend
-3. Deploy
-
----
-
-## Option 3: Render
-
-1. Go to [render.com](https://render.com)
-2. Click "New" > "Web Service"
-3. Connect GitHub repo
-4. Configure:
-   - Build command: `pip install -r backend/requirements.txt`
-   - Start command: `uvicorn backend.main:app --host 0.0.0.0 --port $PORT`
-5. **Important**: Add API keys in "Environment" section
-6. Deploy
+2. "New Project" > "Deploy from GitHub"
+3. Add API keys as environment variables
+4. Get your public URL
 
 ---
 
@@ -51,41 +68,18 @@ Best for AI apps because it handles secrets well.
 ```
 OPENAI_API_KEY=sk-...           # If using OpenAI
 ANTHROPIC_API_KEY=sk-ant-...    # If using Anthropic
-TOGETHER_API_KEY=...            # If using Together
-
-# Optional
-MAX_TOKENS_PER_REQUEST=1000
-DAILY_TOKEN_LIMIT=100000
+VITE_API_URL=https://...        # Backend URL for frontend
 ```
 
 **Never commit API keys to git!**
 
 ---
 
-## Cost Control in Production
-
-1. Set token limits per request
-2. Add daily usage caps
-3. Monitor usage in provider dashboard
-4. Use cheaper models (gpt-4o-mini, claude-3-haiku)
-
----
-
-## Quick Deploy Button
-
-Add to your README:
-
-```markdown
-[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template?template=YOUR_TEMPLATE)
-```
-
----
-
 ## Post-Deploy Checklist
 
-- [ ] App loads without errors
-- [ ] Chat sends and receives messages
+- [ ] Backend health check responds (`/api/health`)
+- [ ] Frontend loads and dropdown populates
+- [ ] AI analysis generates on team selection
 - [ ] API key is set (not exposed in frontend)
 - [ ] Error messages show when API fails
-- [ ] Token limits are configured
-- [ ] Streaming works (if implemented)
+- [ ] Client-side caching works (localStorage)

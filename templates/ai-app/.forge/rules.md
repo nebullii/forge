@@ -3,8 +3,8 @@
 ## Stack
 - Frontend: React 18+ with Vite
 - Backend: FastAPI (Python 3.10+)
-- Database: SQLite (for conversation history)
-- AI SDK: openai / anthropic / together (Python)
+- Database: SQLite (for source data)
+- AI SDK: openai / anthropic (Python)
 - Styling: Tailwind CSS
 
 ## Structure
@@ -13,33 +13,33 @@
 ├── frontend/
 │   ├── src/
 │   │   ├── components/
-│   │   │   ├── ChatWindow.jsx
-│   │   │   ├── MessageBubble.jsx
-│   │   │   └── InputBar.jsx
+│   │   │   └── Layout.jsx
 │   │   ├── pages/
-│   │   └── App.jsx
+│   │   │   ├── Home.jsx
+│   │   │   ├── Detail.jsx
+│   │   │   └── Compare.jsx
+│   │   ├── App.jsx
+│   │   └── main.jsx
 │   ├── package.json
 │   └── vite.config.js
 ├── backend/
 │   ├── main.py
-│   ├── routes/
-│   │   └── chat.py
-│   ├── prompts/
-│   │   └── system.txt
 │   └── requirements.txt
+├── .env
 └── README.md
 ```
 
 ## Constraints
-- Free tier APIs (OpenAI has limits, use cheap models)
-- Never commit API keys (use .env)
-- Handle rate limits gracefully
-- Keep prompts in separate files for easy editing
+- Never commit API keys (use .env + python-dotenv)
+- Handle API errors gracefully (show user-friendly messages)
+- Keep LLM prompts short and specific -- no essay responses
+- Cache results client-side in localStorage where appropriate
 
 ## API Key Handling
 ```python
 # Load from environment
-import os
+from dotenv import load_dotenv
+load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")  # or ANTHROPIC_API_KEY
 
 # Never log or return API keys
@@ -47,35 +47,39 @@ api_key = os.getenv("OPENAI_API_KEY")  # or ANTHROPIC_API_KEY
 ```
 
 ## AI Best Practices
-- Use streaming for long responses
-- Set reasonable max_tokens (500-1000 for chat)
-- Include token counting for cost awareness
-- Cache responses where appropriate
-- Handle API errors (rate limits, timeouts)
-
-## Prompt Engineering
-- Keep system prompts in `/backend/prompts/`
-- Use clear, specific instructions
-- Include examples if needed (few-shot)
-- Test prompts manually before coding
+- Keep prompts concise: ask for 3-5 sentences, not paragraphs
+- Set reasonable max_tokens (512-1024 for analysis)
+- Build prompts from real data (DB stats, history) for grounded responses
+- Parse structured output from LLM (e.g., scores on first line)
+- Handle API errors without breaking the UI
 
 ## Frontend Rules
-- Show typing indicator during AI response
-- Stream responses token-by-token if possible
-- Persist conversation in localStorage or DB
-- Handle loading and error states
+- Show loading state during LLM calls ("Generating analysis...")
+- Don't expose raw data upfront -- let the AI reveal it (element of surprise)
+- Cache previous results in localStorage for instant replay
+- Show cached results as small cards below the main content
+- Handle loading and error states gracefully
 
 ## Backend Rules
-- Validate input length before sending to API
-- Log token usage for cost tracking
-- Implement basic rate limiting per user
-- Return structured error messages
+- Separate data-fetching (DB queries) from LLM calls
+- Build prompts by assembling context from the database
+- Return structured JSON: { analysis, score, metadata }
+- Keep existing CRUD endpoints for supporting data
+- Add lightweight endpoints for dropdowns (names only, no stats)
 
-## Cost Control
-- Default to cheapest model (gpt-4o-mini, claude-3-haiku)
-- Set max_tokens limits
-- Add daily usage caps if needed
-- Show users their token usage
+## Frontend Caching Pattern
+```javascript
+const CACHE_KEY = 'app-history'
+function loadCache() {
+  try { return JSON.parse(localStorage.getItem(CACHE_KEY) || '[]') }
+  catch { return [] }
+}
+function saveToCache(entry) {
+  const history = loadCache().filter(h => h.id !== entry.id)
+  history.unshift(entry)
+  localStorage.setItem(CACHE_KEY, JSON.stringify(history.slice(0, 20)))
+}
+```
 
 ## Deploy Target
 - Railway/Render (full-stack)
