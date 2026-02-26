@@ -15,30 +15,48 @@ TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
 
 # Template descriptions for the templates command and interactive mode
 TEMPLATES = {
-    "web-app": "Full-stack web app (React + FastAPI + SQLite)",
-    "api-only": "REST API backend (FastAPI + SQLite)",
-    "ai-app": "AI/LLM application (OpenAI/Anthropic + chat UI)",
+    "web-app":    "Full-stack web app (React + FastAPI + SQLite)",
+    "api-only":   "REST API backend (FastAPI + SQLite)",
+    "ai-app":     "AI/LLM application (OpenAI/Anthropic + chat UI)",
     "chrome-ext": "Chrome browser extension (Manifest V3)",
-    "cli-tool": "Command-line tool (Click/Typer + packaging)",
-    "data-viz": "Dashboard/visualization (Streamlit or React + charts)",
-    "slack-bot": "Slack bot (slack-bolt)",
-    "discord-bot": "Discord bot (discord.py)",
+    "cli-tool":   "Command-line tool (Click/Typer + packaging)",
+    "data-viz":   "Dashboard/visualization (Streamlit or React + charts)",
+    "slack-bot":  "Slack bot (slack-bolt)",
+    "discord-bot":"Discord bot (discord.py)",
+}
+
+# Detailed stack info shown during interactive spec building
+TEMPLATE_STACKS = {
+    "web-app":    "React · FastAPI · SQLite · Tailwind · Railway",
+    "api-only":   "FastAPI · Pydantic · SQLite · Railway",
+    "ai-app":     "React · FastAPI · OpenAI/Anthropic · Railway",
+    "chrome-ext": "Manifest V3 · JavaScript/React · Chrome Storage",
+    "cli-tool":   "Python · Click/Typer · Rich · PyPI",
+    "data-viz":   "Streamlit or React · Plotly/Recharts · Railway",
+    "slack-bot":  "Python · slack-bolt · Railway",
+    "discord-bot":"Python · discord.py · Railway",
 }
 
 
 def _interactive_new(default_name=None):
-    """Interactive project creation with template picker."""
-    print("\nAvailable templates:\n")
+    """Interactive project creation: template picker + spec builder."""
     template_list = list(TEMPLATES.keys())
+    divider = "─" * 50
+
+    # ── Step 1: Pick template ──────────────────────────────
+    print()
+    print("What kind of project are you building?\n")
     for i, (name, desc) in enumerate(TEMPLATES.items(), 1):
-        print(f"  {i}. {name:12} - {desc}")
-    print(f"  {len(TEMPLATES) + 1}. (blank)       - Start from scratch")
+        stack = TEMPLATE_STACKS.get(name, "")
+        print(f"  {i}. {name:12}  {desc}")
+        print(f"     {'':12}  Stack: {stack}")
+        print()
+    print(f"  {len(TEMPLATES) + 1}. (blank)       Start from scratch")
     print()
 
-    # Get template choice
     while True:
         try:
-            choice = input("Choose a template (1-9): ").strip()
+            choice = input(f"Choose a template (1-{len(TEMPLATES) + 1}): ").strip()
             choice_num = int(choice)
             if 1 <= choice_num <= len(TEMPLATES):
                 template = template_list[choice_num - 1]
@@ -47,32 +65,114 @@ def _interactive_new(default_name=None):
                 template = None
                 break
             else:
-                print("Invalid choice. Try again.")
+                print(f"  Please enter a number between 1 and {len(TEMPLATES) + 1}.")
         except (ValueError, KeyboardInterrupt):
             print("\nCancelled.")
             sys.exit(0)
 
-    # Get project name
+    # ── Step 2: Project name ───────────────────────────────
+    print()
+    if template:
+        stack = TEMPLATE_STACKS.get(template, "")
+        print(f"  Template : {template}")
+        print(f"  Stack    : {stack}")
+        print()
+
     if default_name:
         project_name = default_name
+        print(f"Project name: {project_name}")
     else:
-        project_name = input("Project name: ").strip()
-        if not project_name:
-            print("Error: Project name is required")
-            sys.exit(1)
+        while True:
+            try:
+                project_name = input("Project name: ").strip()
+                if project_name:
+                    break
+                print("  Project name cannot be empty.")
+            except KeyboardInterrupt:
+                print("\nCancelled.")
+                sys.exit(0)
 
-    return template, project_name
+    # ── Step 3: Spec builder ───────────────────────────────
+    print()
+    print(divider)
+    if template:
+        stack = TEMPLATE_STACKS.get(template, "")
+        print(f"  Building with: {stack}")
+    print(divider)
+    print()
+    print("Let's fill in your project spec.\n")
+
+    try:
+        what = input("Describe your project in one or two sentences:\n> ").strip()
+        print()
+
+        users = input("Who will use it?\n> ").strip()
+        print()
+
+        print("Key features (one per line, empty line when done):")
+        features = []
+        while True:
+            line = input("  - ").strip()
+            if not line:
+                break
+            features.append(line)
+        print()
+
+        vibe = input("Vibe / tone (e.g. minimal, fun, professional) [optional]:\n> ").strip()
+        print()
+
+    except KeyboardInterrupt:
+        print("\nCancelled.")
+        sys.exit(0)
+
+    # ── Step 4: Summary + confirm ──────────────────────────
+    print(divider)
+    print("  Summary")
+    print(divider)
+    print(f"  Name     : {project_name}")
+    if template:
+        print(f"  Template : {template}  ({TEMPLATE_STACKS.get(template, '')})")
+    if what:
+        print(f"  What     : {what}")
+    if users:
+        print(f"  Users    : {users}")
+    if features:
+        print(f"  Features :")
+        for f in features:
+            print(f"               - {f}")
+    if vibe:
+        print(f"  Vibe     : {vibe}")
+    print(divider)
+    print()
+
+    try:
+        confirm = input("Create project? [Y/n]: ").strip().lower()
+        if confirm in ("n", "no"):
+            print("Cancelled.")
+            sys.exit(0)
+    except KeyboardInterrupt:
+        print("\nCancelled.")
+        sys.exit(0)
+
+    spec_answers = {
+        "what": what,
+        "users": users,
+        "features": features,
+        "vibe": vibe,
+    }
+
+    return template, project_name, spec_answers
 
 
 def cmd_new(args):
     """Create a new project with .forge/ structure."""
-    # Handle interactive mode
     interactive = getattr(args, 'interactive', False)
     template = getattr(args, 'template', None)
     project_name = getattr(args, 'name', None)
+    spec_answers = None
 
     if interactive:
-        template, project_name = _interactive_new(project_name)
+        template, project_name, spec_answers = _interactive_new(project_name)
 
     if not project_name:
         print("Error: Project name is required")
@@ -95,26 +195,60 @@ def cmd_new(args):
             for f in template_path.iterdir():
                 if f.is_file():
                     shutil.copy(f, forge_path / f.name)
-            print(f"Created {project_name}/ from '{template}' template")
         else:
             print(f"Warning: Template '{template}' not found, using default")
             _create_default_files(forge_path, project_name)
     else:
         _create_default_files(forge_path, project_name)
 
+    # Overwrite spec.md with interactive answers if provided
+    if spec_answers:
+        _write_spec(forge_path, project_name, spec_answers, template)
+
     # Copy firewall policy
     policy_src = TEMPLATES_DIR / "common" / "firewall_policy.json"
     if policy_src.exists():
         shutil.copy(policy_src, forge_path / "firewall_policy.json")
 
-    print(f"")
+    print(f"Created {project_name}/")
+    print(f"  .forge/spec.md    ✓")
+    print(f"  .forge/rules.md   ✓")
+    if (forge_path / "deploy.md").exists():
+        print(f"  .forge/deploy.md  ✓")
+    print()
     print(f"Next steps:")
-    print(f"  1. cd {project_name}")
-    print(f"  2. Edit .forge/spec.md with your idea")
-    print(f"  3. Use your LLM CLI to build it")
-    print(f"")
-    print(f"Example with Claude Code:")
-    print(f"  claude \"Read .forge/spec.md and .forge/rules.md, then build this project\"")
+    print(f"  cd {project_name}")
+    print(f"  forge build")
+
+
+def _write_spec(forge_path: Path, project_name: str, answers: dict, template: str = None):
+    """Write spec.md from interactive answers."""
+    lines = [f"# Project: {project_name}", ""]
+
+    if template:
+        stack = TEMPLATE_STACKS.get(template, "")
+        lines += [f"## Stack", f"{stack}", ""]
+
+    what = answers.get("what", "").strip()
+    lines += ["## What", what if what else "[Describe what you're building]", ""]
+
+    users = answers.get("users", "").strip()
+    lines += ["## Users", f"- {users}" if users else "- [Who will use this?]", ""]
+
+    features = answers.get("features") or []
+    lines.append("## Features")
+    if features:
+        for f in features:
+            lines.append(f"- {f}")
+    else:
+        lines.append("- [Feature 1]")
+    lines.append("")
+
+    vibe = answers.get("vibe", "").strip()
+    if vibe:
+        lines += ["## Vibe", vibe, ""]
+
+    (forge_path / "spec.md").write_text("\n".join(lines))
 
 
 def _create_default_files(forge_path: Path, project_name: str):
@@ -138,22 +272,35 @@ def _create_default_files(forge_path: Path, project_name: str):
 
     (forge_path / "rules.md").write_text("""# Build Rules
 
-## Constraints
-- Use free tiers only (no paid services)
-- Single deployable unit (no microservices)
-- No complex infrastructure
-- Prefer SQLite for data persistence
+## Stack Defaults
+- Backend:  FastAPI + sqlite3 (raw SQL, no ORM)
+- Frontend: React + Vite + plain JavaScript (not TypeScript)
+- Styling:  Tailwind CSS
+- Deploy:   Railway (single service, free tier)
 
-## Tech Preferences
-- Pick boring, proven technology
-- Minimize dependencies
-- Prioritize simplicity over scalability
-- Use environment variables for secrets
+## Constraints
+- Free tiers only — no paid services or credit card required
+- Single deployable unit — no microservices
+- SQLite for all persistence — no Postgres, Redis, or external DBs
+- Environment variables for all secrets — never hardcode
+
+## What NOT to use
+- ORMs (SQLAlchemy, Prisma) — use sqlite3 directly
+- TypeScript — use plain JavaScript/JSX
+- Redux, Zustand, React Query — use useState/useEffect + fetch()
+- Celery or message queues
+- GraphQL — use REST
+- Complex auth (OAuth2, social login) — use simple JWT if needed
+
+## Use when appropriate
+- Redis — for caching high-read data or improving page load
+- Docker + docker-compose — when stack has multiple services (e.g. app + Redis)
 
 ## Code Style
 - Clear over clever
 - Small files, small functions
-- Include basic error handling
+- Basic error handling at boundaries
+- No premature abstraction
 """)
 
     print(f"Created {project_name}/")
