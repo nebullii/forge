@@ -346,6 +346,41 @@ def cmd_sprint(args):
 
 
 
+def cmd_feedback(args):
+    """Add feedback to the Forge knowledge base."""
+    from .knowledge import add, KNOWLEDGE_FILE
+
+    # If feedback passed as argument, save directly
+    if getattr(args, 'message', None):
+        add(args.message)
+        print(f"Saved to {KNOWLEDGE_FILE}")
+        return
+
+    # Otherwise show current knowledge base or open interactive prompt
+    subcmd = getattr(args, 'feedback_cmd', 'add')
+
+    if subcmd == 'show':
+        if KNOWLEDGE_FILE.exists():
+            print(KNOWLEDGE_FILE.read_text())
+        else:
+            print("No feedback saved yet. Run 'forge feedback' after a build.")
+        return
+
+    if subcmd == 'clear':
+        if KNOWLEDGE_FILE.exists():
+            confirm = input(f"Clear {KNOWLEDGE_FILE}? [y/N]: ").strip().lower()
+            if confirm == 'y':
+                KNOWLEDGE_FILE.unlink()
+                print("Knowledge base cleared.")
+        else:
+            print("Nothing to clear.")
+        return
+
+    # Default: interactive add
+    from .knowledge import collect_feedback
+    collect_feedback()
+
+
 def cmd_templates(args):
     """List available project templates."""
     print("\nAvailable templates:\n")
@@ -535,6 +570,14 @@ def main():
     sprint_parser = subparsers.add_parser("sprint", help="Sprint timer")
     sprint_parser.add_argument("sprint_cmd", choices=["start", "status", "wrap"], help="Sprint command")
     sprint_parser.set_defaults(func=cmd_sprint)
+
+    # forge feedback
+    feedback_parser = subparsers.add_parser("feedback", help="Add feedback to the knowledge base")
+    feedback_parser.add_argument("feedback_cmd", nargs="?", default="add",
+                                 choices=["add", "show", "clear"],
+                                 help="add (default), show, or clear")
+    feedback_parser.add_argument("--message", "-m", help="Feedback message (skips interactive prompt)")
+    feedback_parser.set_defaults(func=cmd_feedback)
 
     # forge publish
     publish_parser = subparsers.add_parser("publish", help="Publish to GitHub")
