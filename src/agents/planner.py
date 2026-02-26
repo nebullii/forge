@@ -147,6 +147,8 @@ Output ONLY the YAML, nothing else."""
         return self._parse_plan(response)
 
     def _build_plan_prompt(self, spec: str, rules: str, existing_files: str) -> str:
+        from ..knowledge import load as load_knowledge
+
         context_section = ""
         if existing_files and existing_files != "(No project files yet)":
             context_section = f"""
@@ -155,13 +157,21 @@ Output ONLY the YAML, nothing else."""
 
 Note: This is an existing project. Plan tasks that build on what exists."""
 
+        knowledge = load_knowledge()
+        knowledge_section = ""
+        if knowledge:
+            knowledge_section = f"""
+## Past Learnings (apply these to this build)
+{knowledge}
+"""
+
         return f"""\
 ## Project Specification
 {spec}
 
 ## Build Rules
 {rules}
-{context_section}
+{knowledge_section}{context_section}
 
 Analyze the specification and rules. Then output a structured build plan as YAML.
 

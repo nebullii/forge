@@ -254,6 +254,12 @@ forge config init                 # Create ~/.forge/config.yaml
 forge config show                 # Show current config
 forge config path                 # Print config file path
 
+# Knowledge base (self-improvement)
+forge feedback                    # Add feedback after a build (interactive)
+forge feedback -m "use JWT auth"  # Add feedback directly
+forge feedback show               # View all saved learnings
+forge feedback clear              # Clear the knowledge base
+
 # Publish
 forge publish                     # Push to GitHub
 forge sprint start                # Start sprint timer

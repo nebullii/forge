@@ -194,11 +194,20 @@ class ForgeADKOrchestrator:
             user_id="forge-build",
         )
 
-        # Prompt: give the orchestrator the full spec + rules
+        # Load past learnings from the knowledge base
+        from ..knowledge import load as load_knowledge
+        knowledge = load_knowledge()
+        knowledge_section = (
+            f"\n\n## Past Learnings (apply these to this build)\n{knowledge}"
+            if knowledge else ""
+        )
+
+        # Prompt: give the orchestrator the full spec + rules + learnings
         prompt = (
             f"Build this project using all available agents.\n\n"
             f"## Project Spec\n{spec}\n\n"
-            f"## Build Rules\n{rules}\n\n"
+            f"## Build Rules\n{rules}"
+            f"{knowledge_section}\n\n"
             f"Call every agent tool. Start with call_planner."
         )
         message = genai_types.Content(
