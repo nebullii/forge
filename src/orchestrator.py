@@ -139,8 +139,6 @@ class BuildOrchestrator:
         self.state.completed_at = datetime.now().isoformat()
         self._save_state()
 
-        self._collect_feedback()
-
     def _run_adk(self, spec: str, rules: str):
         """Run the build using the ADK + A2A multi-agent pipeline."""
         from .adk.orchestrator_agent import ForgeADKOrchestrator
@@ -208,15 +206,6 @@ class BuildOrchestrator:
         self.state.status = "completed"
         self.state.completed_at = datetime.now().isoformat()
         self._save_state()
-
-        self._collect_feedback()
-
-    def _collect_feedback(self):
-        """Prompt user for feedback and save to knowledge base."""
-        from .knowledge import collect_feedback
-        # Use provider+model as context tag
-        tag = self.provider_config.model or ""
-        collect_feedback(template=tag)
 
     def _can_resume(self, spec: str) -> bool:
         if self.state.status in ("not_started", "completed"):
