@@ -8,7 +8,7 @@ import re
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING, List
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,7 @@ class BuildOrchestrator:
         verbose: bool = False,
         use_adk: bool = False,
         ui: Optional["BuildUI"] = None,
+        agents: Optional[List[str]] = None,
     ):
         self.forge_path = forge_path
         self.project_root = forge_path.parent
@@ -54,6 +55,10 @@ class BuildOrchestrator:
         self.verbose = verbose
         self.use_adk = use_adk
         self.ui = ui
+        # None means "run all agents"; a frozenset restricts which task agents run.
+        self._allowed_agents: Optional[frozenset] = (
+            frozenset(agents) if agents else None
+        )
 
         self.provider = create_provider(provider_config)
 
@@ -130,8 +135,10 @@ class BuildOrchestrator:
         }
         return self._adk_agents
 
-    def run(self, feature: Optional[str] = None):
+    def run(self, feature: Optional[str] = None, agents: Optional[List[str]] = None):
         """Run the build (or incremental feature addition)."""
+        if agents is not None:
+            self._allowed_agents = frozenset(agents)
         self._build_start_time = time.monotonic()
 
         spec = self._read_forge_file("spec.md")
@@ -191,7 +198,8 @@ class BuildOrchestrator:
             agents=agents,
         )
 
-        result = orchestrator.run(spec, rules, verbose=self.verbose)
+        allowed = list(self._allowed_agents) if self._allowed_agents else None
+        result = orchestrator.run(spec, rules, verbose=self.verbose, allowed_agents=allowed)
 
         # Surface agent errors before writing anything
         errors = result.get("errors", [])
@@ -389,7 +397,20 @@ class BuildOrchestrator:
         for i in range(self.state.current_task_index, total):
             task = self.state.tasks[i]
 
-            if task.status == "completed":
+            if task.status in ("completed", "skipped"):
+                continue
+
+            # Agent filter — skip tasks assigned to agents not in the allowed set
+            agent_name = task.agent or "coder"
+            if self._allowed_agents is not None and agent_name not in self._allowed_agents:
+                logger.info(
+                    "Skipping task '%s' (agent '%s' not in allowed set)",
+                    task.name, agent_name,
+                )
+                if not self.ui:
+                    print(f"   [skip] {task.name}  ({agent_name} not selected)")
+                task.status = "skipped"
+                self._save_state()
                 continue
 
             if self.ui:

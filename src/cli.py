@@ -542,6 +542,7 @@ def cmd_build(args):
     from .config import ensure_config, get_provider_config
     from .orchestrator import BuildOrchestrator
     from .ui import BuildUI
+    from .agent_selector import AgentSelector, ALL_AGENTS
 
     config = ensure_config()
 
@@ -550,7 +551,6 @@ def cmd_build(args):
     except ValueError:
         print("No API key configured. Running setup wizard...\n")
         cmd_setup(args)
-        # Re-load config after setup
         config = ensure_config()
         try:
             provider_config = get_provider_config(config, getattr(args, 'provider', None))
@@ -558,10 +558,30 @@ def cmd_build(args):
             print(f"Error: {e2}")
             sys.exit(1)
 
-    feature = getattr(args, 'feature', None)
-    no_review = getattr(args, 'no_review', False)
-    verbose = getattr(args, 'verbose', False)
-    use_adk = getattr(args, 'adk', False)
+    feature     = getattr(args, 'feature', None)
+    no_review   = getattr(args, 'no_review', False)
+    verbose     = getattr(args, 'verbose', False)
+    use_adk     = getattr(args, 'adk', False)
+    agents_flag = getattr(args, 'agents', 'all')
+    do_suggest  = getattr(args, 'suggest', False)
+
+    selector = AgentSelector()
+
+    # Validate --agents flag early so we fail fast on bad names
+    try:
+        explicit_agents = selector.parse_flag(agents_flag)
+    except ValueError as e:
+        print(f"Error in --agents: {e}")
+        sys.exit(1)
+
+    # Resolve the final agent list
+    # explicit_agents == [] means "auto" (parse_flag sentinel)
+    if agents_flag.lower() == "auto":
+        resolved_agents = None   # orchestrator runs all agents
+    elif agents_flag.lower() == "all":
+        resolved_agents = None   # same — no restriction
+    else:
+        resolved_agents = explicit_agents or None
 
     ui = BuildUI(verbose=verbose)
 
@@ -569,6 +589,30 @@ def cmd_build(args):
         print(f"Building with {provider_config} [ADK multi-agent mode]...")
     else:
         print(f"Building with {provider_config}...")
+
+    # --suggest: show agent list and let user confirm or edit before proceeding
+    if do_suggest:
+        _show_agent_suggestion(forge_path, selector, resolved_agents or list(ALL_AGENTS))
+        try:
+            answer = input("\nProceed? [Y/n/edit]: ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print("\nCancelled.")
+            return
+        if answer == "n":
+            print("Build cancelled.")
+            return
+        if answer == "edit":
+            raw = input(
+                f"Enter agents (comma-separated from {', '.join(ALL_AGENTS)}): "
+            ).strip()
+            try:
+                resolved_agents = selector.parse_flag(raw) or resolved_agents
+            except ValueError as e:
+                print(f"Error: {e}")
+                sys.exit(1)
+    elif resolved_agents:
+        print(f"Agents: {', '.join(resolved_agents)}")
+
     print("")
 
     orchestrator = BuildOrchestrator(
@@ -578,6 +622,7 @@ def cmd_build(args):
         verbose=verbose,
         use_adk=use_adk,
         ui=ui,
+        agents=resolved_agents,
     )
 
     try:
@@ -588,6 +633,16 @@ def cmd_build(args):
     except Exception as e:
         print(f"Build failed: {e}")
         sys.exit(1)
+
+
+def _show_agent_suggestion(forge_path: Path, selector, agents: list) -> None:
+    """Print agent descriptions for the given list."""
+    from .agent_selector import AGENT_DESCRIPTIONS
+    print("\nAgents that will run:\n")
+    for name in agents:
+        desc = AGENT_DESCRIPTIONS.get(name, "")
+        print(f"  {name:<10}  {desc}")
+    print()
 
 
 
@@ -727,6 +782,20 @@ def main():
     build_parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     build_parser.add_argument("--adk", action="store_true",
                               help="Use ADK multi-agent pipeline (Backend, Frontend, Security, CI, Deploy)")
+    build_parser.add_argument(
+        "--agents",
+        default="all",
+        metavar="AGENTS",
+        help=(
+            "Which agents to run. Options: 'all' (default), 'auto' (detect from spec), "
+            "or a comma-separated list: backend,frontend,ci,deploy,security,reviewer"
+        ),
+    )
+    build_parser.add_argument(
+        "--suggest",
+        action="store_true",
+        help="Show which agents would run and confirm before starting",
+    )
     build_parser.set_defaults(func=cmd_build)
 
     # forge setup

@@ -1,5 +1,9 @@
 # Forge
 
+[![CI](https://github.com/nebullii/forge/actions/workflows/ci.yml/badge.svg)](https://github.com/nebullii/forge/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 **Describe your idea. AI builds it.**
 
 Forge is an open-source CLI that turns a markdown spec into a working codebase using a
@@ -89,11 +93,10 @@ Phase 3: Reviewing...
 ## Quick Start
 
 ```bash
-# Install
-pip install forge-ai
-
-# For multi-agent ADK mode
-pip install "forge-ai[adk]"
+# Install from source
+git clone https://github.com/nebullii/forge
+cd forge
+pip install -e ".[build,adk]"
 
 # Set your LLM provider key
 export ANTHROPIC_API_KEY=sk-ant-...   # or OPENAI_API_KEY, TOGETHER_API_KEY, etc.
@@ -671,21 +674,12 @@ my-project/
 
 ## Installation
 
-### From PyPI
-
-```bash
-pip install forge-ai               # Classic mode only (pyyaml only)
-pip install "forge-ai[build]"      # Classic mode + all LLM provider SDKs
-pip install "forge-ai[adk]"        # ADK multi-agent mode
-pip install "forge-ai[build,adk]"  # Everything
-```
-
-### From source
-
 ```bash
 git clone https://github.com/nebullii/forge
 cd forge
-pip install -e ".[build,adk]"
+pip install -e ".[build,adk]"      # Recommended: all LLM providers + ADK multi-agent mode
+pip install -e ".[build]"          # Classic mode only (no ADK)
+pip install -e ".[dev,build,adk]"  # Development (includes pytest)
 ```
 
 ### Provider setup
