@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "forge-ai"
-version = "0.1.0"
+version = "0.2.0"
 description = "Project scaffolding for LLM-assisted development"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
 keywords = ["ai", "llm", "scaffolding", "project-setup"]
 authors = [
-    {name = "Sundai Club"}
+    {name = "nebullii"}
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
