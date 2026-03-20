@@ -49,8 +49,8 @@ adk = [
 forge = "src.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/sundai-club/forge"
-Repository = "https://github.com/sundai-club/forge"
+Homepage = "https://github.com/nebullii/forge"
+Repository = "https://github.com/nebullii/forge"
 
 [tool.setuptools.packages.find]
 where = ["."]
