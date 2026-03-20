@@ -15,6 +15,8 @@ class TaskState:
     description: str = ""
     status: str = "pending"
     agent: str = ""
+    prompt: str = ""        # enriched per-agent prompt (from ProjectManagerAgent)
+    contracts: str = ""     # API contracts this task exposes
     files_written: list[str] = field(default_factory=list)
     error: str = ""
     started_at: str = ""
@@ -24,6 +26,7 @@ class TaskState:
 @dataclass
 class BuildState:
     """Full build state, serialized to .forge/build-state.yaml."""
+    schema_version: int = 2
     build_id: str = ""
     status: str = "not_started"
     started_at: str = ""
@@ -40,6 +43,22 @@ class BuildState:
 
 STATE_FILE = "build-state.yaml"
 
+# Fields present in each schema version. Missing fields get their dataclass default.
+_TASK_STATE_FIELDS = {f.name for f in TaskState.__dataclass_fields__.values()}  # type: ignore[attr-defined]
+_BUILD_STATE_FIELDS = {f.name for f in BuildState.__dataclass_fields__.values()}  # type: ignore[attr-defined]
+
+
+def _load_task(t: dict) -> TaskState:
+    """Construct TaskState tolerantly — ignore unknown keys, fill missing ones with defaults."""
+    known = {k: v for k, v in t.items() if k in _TASK_STATE_FIELDS}
+    return TaskState(**known)
+
+
+def _load_build(data: dict) -> BuildState:
+    """Construct BuildState tolerantly — ignore unknown keys, fill missing ones with defaults."""
+    known = {k: v for k, v in data.items() if k in _BUILD_STATE_FIELDS}
+    return BuildState(**known)
+
 
 def load_build_state(forge_path: Path) -> BuildState:
     """Load build state from .forge/build-state.yaml, or return fresh state."""
@@ -50,12 +69,10 @@ def load_build_state(forge_path: Path) -> BuildState:
     with open(state_path) as f:
         data = yaml.safe_load(f) or {}
 
-    tasks = []
-    for t in data.pop("tasks", []):
-        tasks.append(TaskState(**t))
+    tasks = [_load_task(t) for t in data.pop("tasks", [])]
     data["tasks"] = tasks
 
-    return BuildState(**data)
+    return _load_build(data)
 
 
 def save_build_state(forge_path: Path, state: BuildState):

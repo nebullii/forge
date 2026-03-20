@@ -1,10 +1,13 @@
 """Agentic Firewall (AFW) - Core security layer for any app."""
 
+import logging
 import re
 import json
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_POLICY = {
     "allowed_paths": [
@@ -70,6 +73,12 @@ DEFAULT_POLICY = {
         "getattr\\(",
         "setattr\\(",
         "importlib\\."
+    ],
+    "blocked_patterns_exempt_extensions": [
+        ".sh", ".bash", ".zsh",
+        ".yml", ".yaml",
+        "Dockerfile", "Makefile",
+        ".mk", ".containerfile"
     ]
 }
 
@@ -105,10 +114,19 @@ class AgenticFirewall:
             return False, f"Path '{filepath}' is not in the allowlist. Only project-related files can be edited."
 
         # Check for Malicious Patterns in Content
-        for pattern in self.policy.get("blocked_patterns", []):
-            if re.search(pattern, content):
-                self._log_violation(filepath, f"MALICIOUS_CONTENT_PATTERN: {pattern}")
-                return False, f"Potentially malicious code pattern detected in '{filepath}'."
+        # Exempt shell scripts, CI configs, and build files — these legitimately use
+        # subprocess, eval, exec, etc. as part of their purpose.
+        exempt_exts = self.policy.get("blocked_patterns_exempt_extensions", [])
+        filename = Path(filepath).name
+        is_exempt = any(
+            filename == ext or filename.endswith(ext)
+            for ext in exempt_exts
+        )
+        if not is_exempt:
+            for pattern in self.policy.get("blocked_patterns", []):
+                if re.search(pattern, content):
+                    self._log_violation(filepath, f"MALICIOUS_CONTENT_PATTERN: {pattern}")
+                    return False, f"Potentially malicious code pattern detected in '{filepath}'."
 
         self._log_event(filepath, "PERMITTED")
         return True, "Success"
@@ -124,5 +142,5 @@ class AgenticFirewall:
             f.write(json.dumps(log_entry) + "\n")
 
     def _log_violation(self, target: str, violation_type: str):
-        print(f"⚠️  SECURITY VIOLATION: {violation_type} on {target}")
+        logger.warning("SECURITY VIOLATION: %s on %s", violation_type, target)
         self._log_event(target, "DENIED", violation_type)

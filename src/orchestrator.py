@@ -1,22 +1,31 @@
 """Build orchestrator -- drives the multi-agent build pipeline."""
 
+import logging
 import sys
 import uuid
 import yaml
 import re
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
 
 from .providers import create_provider
 from .providers.base import ProviderConfig
 from .agents import PlannerAgent, CoderAgent, ReviewerAgent
 from .agents import BackendAgent, FrontendAgent, SecurityAgent, CIAgent, DeployAgent
+from .agents import ProjectManagerAgent
 from .security.firewall import AgenticFirewall
 from .state import (
     BuildState, TaskState, load_build_state, save_build_state, compute_spec_hash,
 )
 from .context import build_context_string
+from .skills import SkillsLoader
+
+if TYPE_CHECKING:
+    from .ui import BuildUI
 
 
 class BuildOrchestrator:
@@ -37,20 +46,29 @@ class BuildOrchestrator:
         review: bool = True,
         verbose: bool = False,
         use_adk: bool = False,
+        ui: Optional["BuildUI"] = None,
     ):
         self.forge_path = forge_path
         self.project_root = forge_path.parent
         self.review = review
         self.verbose = verbose
         self.use_adk = use_adk
+        self.ui = ui
 
         self.provider = create_provider(provider_config)
-        self.planner = PlannerAgent(self.provider, self.project_root)
-        self.coder = CoderAgent(self.provider, self.project_root)
-        self.reviewer = ReviewerAgent(self.provider, self.project_root) if review else None
+
+        # Load skills for this project
+        skills = SkillsLoader().load(self.project_root)
+
+        self.planner = PlannerAgent(self.provider, self.project_root, skills_loader=skills)
+        self.coder = CoderAgent(self.provider, self.project_root, skills_loader=skills)
+        self.reviewer = ReviewerAgent(self.provider, self.project_root, skills_loader=skills) if review else None
+        self.project_manager = ProjectManagerAgent(self.provider, self.project_root, skills_loader=skills)
 
         # ADK specialized agents (initialized lazily in ADK mode)
         self._adk_agents = None
+        self._classic_agents: dict = {}  # lazy: agent_name → agent instance
+        self._skills = skills
 
         self.firewall = AgenticFirewall(
             policy_path=self.forge_path / "firewall_policy.json",
@@ -59,6 +77,7 @@ class BuildOrchestrator:
 
         self.state = load_build_state(forge_path)
         self.provider_config = provider_config
+        self._build_start_time: Optional[float] = None
 
     def _init_adk_agents(self) -> dict:
         """Initialize all specialized agents as ADK LlmAgent + ADKAgentRunner instances."""
@@ -70,7 +89,7 @@ class BuildOrchestrator:
         from .agents import (
             create_planner_agent, create_backend_agent, create_frontend_agent,
             create_security_agent, create_ci_agent, create_deploy_agent,
-            create_reviewer_agent,
+            create_reviewer_agent, create_project_manager_agent,
         )
 
         llm = create_forge_llm(self.provider)
@@ -104,11 +123,17 @@ class BuildOrchestrator:
                 create_reviewer_agent(llm), name="reviewer",
                 skill_description="Reviews all generated code for correctness and consistency.",
             ),
+            "project_manager": ADKAgentRunner(
+                create_project_manager_agent(llm), name="project_manager",
+                skill_description="Assigns tasks to specialized agents with targeted prompts.",
+            ),
         }
         return self._adk_agents
 
     def run(self, feature: Optional[str] = None):
         """Run the build (or incremental feature addition)."""
+        self._build_start_time = time.monotonic()
+
         spec = self._read_forge_file("spec.md")
         rules = self._read_forge_file("rules.md")
         self._warn_suspicious(spec, "spec.md")
@@ -130,6 +155,7 @@ class BuildOrchestrator:
         else:
             self._init_state(spec)
             self._phase_plan(spec, rules, feature)
+            self._phase_manage(spec, rules)
             self._phase_build(spec, rules)
 
         if self.review and self.reviewer:
@@ -139,6 +165,12 @@ class BuildOrchestrator:
         self.state.completed_at = datetime.now().isoformat()
         self._save_state()
 
+        if self.ui:
+            self.ui.build_summary(
+                files=self.state.files_written,
+                errors=self.state.errors,
+                start_time=self._build_start_time,
+            )
     def _run_adk(self, spec: str, rules: str):
         """Run the build using the ADK + A2A multi-agent pipeline."""
         from .adk.orchestrator_agent import ForgeADKOrchestrator
@@ -164,7 +196,7 @@ class BuildOrchestrator:
         # Surface agent errors before writing anything
         errors = result.get("errors", [])
         for err in errors:
-            print(f"   WARNING: {err}")
+            logger.warning("ADK agent error: %s", err)
 
         # Abort if planning itself failed — nothing useful to write
         if errors and not result.get("files_written"):
@@ -228,8 +260,12 @@ class BuildOrchestrator:
         self._save_state()
 
     def _phase_plan(self, spec: str, rules: str, feature: Optional[str]):
-        print("Phase 1: Planning...")
-        print("")
+        if self.ui:
+            self.ui.phase_start("Phase 1: Planning")
+            self.ui.spinner_start("    Analyzing spec")
+        else:
+            print("Phase 1: Planning...")
+            print("")
 
         existing_context = build_context_string(self.project_root, max_tokens=2000)
 
@@ -237,6 +273,9 @@ class BuildOrchestrator:
             plan = self.planner.plan_incremental(spec, rules, feature, existing_context)
         else:
             plan = self.planner.analyze_and_plan(spec, rules, existing_context)
+
+        if self.ui:
+            self.ui.spinner_stop()
 
         decisions = plan.get("decisions", {})
         self.state.decisions = _format_decisions(decisions)
@@ -258,15 +297,91 @@ class BuildOrchestrator:
         self.state.current_task_index = 0
         self._save_state()
 
-        print(f"   Plan: {len(self.state.tasks)} tasks")
-        for t in self.state.tasks:
-            print(f"     - {t.name}")
-        print("")
+        if self.ui:
+            self.ui.phase_end(f"  {len(self.state.tasks)} tasks planned")
+            self.ui.set_tasks([t.name for t in self.state.tasks])
+        else:
+            print(f"   Plan: {len(self.state.tasks)} tasks")
+            for t in self.state.tasks:
+                print(f"     - {t.name}")
+            print("")
+
+    def _phase_manage(self, spec: str, rules: str):
+        """Phase 1b: Project Manager enriches tasks with agent assignments + prompts."""
+        if self.ui:
+            self.ui.spinner_start("    Project Manager distributing tasks")
+        else:
+            print("Phase 1b: Project Manager...")
+            print("")
+
+        tasks_as_dicts = [
+            {"id": t.id, "name": t.name, "description": t.description, "agent": t.agent}
+            for t in self.state.tasks
+        ]
+        plan = {"decisions": {}, "tasks": tasks_as_dicts}
+
+        # Recover decisions from decisions.md if present
+        decisions_path = self.forge_path / "decisions.md"
+        if decisions_path.exists():
+            plan["decisions"] = {"raw": decisions_path.read_text()}
+
+        try:
+            enriched = self.project_manager.enrich_plan(plan, spec, rules)
+        except Exception as e:
+            if self.ui:
+                self.ui.spinner_stop()
+            else:
+                print(f"   WARNING: Project Manager failed ({e}), using original plan")
+                print("")
+            return
+
+        if self.ui:
+            self.ui.spinner_stop()
+
+        enriched_tasks = enriched.get("tasks", [])
+        enriched_by_id = {t.get("id"): t for t in enriched_tasks}
+
+        for task_state in self.state.tasks:
+            enriched_task = enriched_by_id.get(task_state.id)
+            if enriched_task:
+                task_state.agent = enriched_task.get("agent", task_state.agent or "coder")
+                task_state.prompt = enriched_task.get("prompt", "")
+                task_state.contracts = enriched_task.get("contracts", "")
+
+        self._save_state()
+
+        if not self.ui:
+            for t in self.state.tasks:
+                pad = " " * max(0, 40 - len(t.name))
+                print(f"     {t.name}{pad}→ {t.agent}")
+            print("")
+
+    def _get_classic_agent(self, agent_name: str):
+        """Return (or lazily create) the classic-mode agent instance for the given role."""
+        if agent_name not in self._classic_agents:
+            cls_map = {
+                "backend":  BackendAgent,
+                "frontend": FrontendAgent,
+                "ci":       CIAgent,
+                "deploy":   DeployAgent,
+                "security": SecurityAgent,
+                "coder":    CoderAgent,
+            }
+            cls = cls_map.get(agent_name, CoderAgent)
+            self._classic_agents[agent_name] = cls(
+                self.provider, self.project_root, skills_loader=self._skills
+            )
+        return self._classic_agents[agent_name]
 
     def _phase_build(self, spec: str, rules: str):
-        print("Phase 2: Building...")
-        print("")
+        if self.ui:
+            self.ui.phase_start("Phase 2: Building")
+        else:
+            print("Phase 2: Building...")
+            print("")
         self._execute_remaining_tasks(spec, rules)
+        if self.ui:
+            self.ui.phase_end("  Build phase complete")
 
     def _execute_remaining_tasks(self, spec: str, rules: str):
         total = len(self.state.tasks)
@@ -277,7 +392,10 @@ class BuildOrchestrator:
             if task.status == "completed":
                 continue
 
-            print(f"   [{i+1}/{total}] {task.name}")
+            if self.ui:
+                self.ui.task_start(task.name)
+            else:
+                print(f"   [{i+1}/{total}] {task.name}")
 
             task.status = "in_progress"
             task.started_at = datetime.now().isoformat()
@@ -289,19 +407,26 @@ class BuildOrchestrator:
                     self.project_root, max_tokens=3000
                 )
 
-                task_dict = {
-                    "name": task.name,
-                    "description": task.description,
-                    "files": [],
-                }
+                agent_name = task.agent or "coder"
+                agent = self._get_classic_agent(agent_name)
 
-                response = self.coder.generate_files(
-                    task_dict, spec, rules,
-                    self.state.decisions, project_context
-                )
+                if task.prompt:
+                    # Use the enriched, self-contained prompt from ProjectManagerAgent
+                    response = agent.invoke(task.prompt)
+                else:
+                    # Fallback: CoderAgent with full context (pre-PM behaviour)
+                    task_dict = {
+                        "name": task.name,
+                        "description": task.description,
+                        "files": [],
+                    }
+                    response = self.coder.generate_files(
+                        task_dict, spec, rules,
+                        self.state.decisions, project_context
+                    )
 
-                files = self.coder.extract_files(response)
-                
+                files = agent.extract_files(response)
+
                 # Apply Agentic Firewall
                 allowed_files = []
                 for filepath, content in files:
@@ -309,20 +434,26 @@ class BuildOrchestrator:
                     if permitted:
                         allowed_files.append((filepath, content))
                     else:
-                        print(f"      🚨 FIREWALL BLOCK: {filepath} ({reason})")
+                        if not self.ui:
+                            print(f"      FIREWALL BLOCK: {filepath} ({reason})")
                         self.state.errors.append(f"Firewall blocked {filepath}: {reason}")
 
-                written = self.coder.write_files(allowed_files)
+                written = agent.write_files(allowed_files)
 
                 task.files_written = written
                 task.status = "completed"
                 task.completed_at = datetime.now().isoformat()
                 self.state.files_written.extend(written)
 
-                for f in written:
-                    print(f"      + {f}")
+                if self.ui:
+                    self.ui.task_done(task.name, written)
+                else:
+                    for f in written:
+                        print(f"      + {f}")
 
             except KeyboardInterrupt:
+                if self.ui:
+                    self.ui.spinner_stop()
                 task.status = "pending"
                 self._save_state()
                 raise
@@ -331,15 +462,23 @@ class BuildOrchestrator:
                 task.error = str(e)
                 self.state.errors.append(f"Task '{task.name}': {e}")
                 self._save_state()
-                print(f"      ERROR: {e}")
+                if self.ui:
+                    self.ui.task_error(task.name, str(e))
+                else:
+                    print(f"      ERROR: {e}")
                 continue
 
             self._save_state()
 
-        print("")
+        if not self.ui:
+            print("")
 
     def _phase_review(self, spec: str, rules: str):
-        print("Phase 3: Reviewing...")
+        if self.ui:
+            self.ui.phase_start("Phase 3: Reviewing")
+            self.ui.spinner_start("    Reviewing generated files")
+        else:
+            print("Phase 3: Reviewing...")
 
         self.state.status = "reviewing"
         self._save_state()
@@ -354,28 +493,39 @@ class BuildOrchestrator:
                     pass
 
         if not files_dict:
-            print("   No files to review.")
-            print("")
+            if self.ui:
+                self.ui.spinner_stop()
+                self.ui.phase_end("  No files to review")
+            else:
+                print("   No files to review.")
+                print("")
             return
 
         review = self.reviewer.review_files(files_dict, spec, rules)
 
+        if self.ui:
+            self.ui.spinner_stop()
+
+        fixes_applied = 0
         if review["passed"]:
-            print("   Review passed.")
+            if not self.ui:
+                print("   Review passed.")
         else:
             issues = review.get("issues", [])
-            print(f"   Review found {len(issues)} issue(s):")
             errors = [i for i in issues if i.get("severity") == "error"]
             warnings = [i for i in issues if i.get("severity") == "warning"]
 
-            for issue in errors:
-                print(f"      ERROR in {issue.get('file', '?')}: {issue.get('message', '')}")
-            for issue in warnings:
-                print(f"      WARN  in {issue.get('file', '?')}: {issue.get('message', '')}")
+            if not self.ui:
+                print(f"   Review found {len(issues)} issue(s):")
+                for issue in errors:
+                    print(f"      ERROR in {issue.get('file', '?')}: {issue.get('message', '')}")
+                for issue in warnings:
+                    print(f"      WARN  in {issue.get('file', '?')}: {issue.get('message', '')}")
 
             if errors:
-                print("")
-                print("   Attempting auto-fix...")
+                if not self.ui:
+                    print("")
+                    print("   Attempting auto-fix...")
                 for issue in errors:
                     filepath = issue.get("file", "")
                     if filepath in files_dict:
@@ -386,16 +536,24 @@ class BuildOrchestrator:
                             )
                             fixed_files = self.coder.extract_files(response)
                             written = self.coder.write_files(fixed_files)
-                            for f in written:
-                                print(f"      ~ {f} (fixed)")
+                            fixes_applied += len(written)
+                            if not self.ui:
+                                for f in written:
+                                    print(f"      ~ {f} (fixed)")
                         except Exception as e:
-                            print(f"      Could not fix {filepath}: {e}")
+                            if not self.ui:
+                                print(f"      Could not fix {filepath}: {e}")
 
         review_path = self.forge_path / "review.yaml"
         with open(review_path, "w") as f:
             yaml.dump(review, f, default_flow_style=False)
 
-        print("")
+        if self.ui:
+            fix_note = f", {fixes_applied} auto-fix(es) applied" if fixes_applied else ""
+            status = "passed" if review["passed"] else f"{len(review.get('issues', []))} issue(s)"
+            self.ui.phase_end(f"  Review {status}{fix_note}")
+        else:
+            print("")
 
     def _read_forge_file(self, name: str) -> str:
         path = self.forge_path / name
@@ -436,7 +594,7 @@ class BuildOrchestrator:
 
         if hits:
             unique = ", ".join(sorted(set(hits)))
-            print(f"WARNING: Suspicious pattern(s) found in .forge/{name}: {unique}")
+            logger.warning("Suspicious pattern(s) found in .forge/%s: %s", name, unique)
 
     def _save_state(self):
         save_build_state(self.forge_path, self.state)

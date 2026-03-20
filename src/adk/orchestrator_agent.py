@@ -50,6 +50,7 @@ from a project specification.
 
 You have these tools available:
 - call_planner            — Analyze spec → build plan + tech decisions. Call this FIRST.
+- call_project_manager    — Enrich the plan: assign agents + write per-task prompts. Call SECOND.
 - run_parallel_agents     — Run multiple independent agents concurrently (sub-orchestrator).
                             Pass agent_names as a comma-separated string e.g. "backend,ci,deploy".
 - call_backend_agent      — Generate backend (API, DB, services).
@@ -63,22 +64,26 @@ Execution order — follow this exactly:
 1. call_planner(spec, rules)
    — Must be first. Produces the build plan and tech decisions.
 
-2. run_parallel_agents("backend,ci,deploy", spec, rules)
+2. call_project_manager(spec, rules)
+   — Must be second. Enriches each task with the right agent assignment and a
+     targeted prompt. This ensures each agent gets precise, self-contained instructions.
+
+3. run_parallel_agents("backend,ci,deploy", spec, rules)
    — Backend, CI, and Deploy are all independent of each other.
    — Use the sub-orchestrator so they run concurrently and save time.
 
-3. call_frontend_agent(spec, rules)
+4. call_frontend_agent(spec, rules)
    — Must come after backend (needs the API contracts).
 
-4. call_security_agent()
+5. call_security_agent()
    — Must come after backend + frontend are both done.
 
-5. call_reviewer_agent(spec, rules)
+6. call_reviewer_agent(spec, rules)
    — Always last. Reviews everything generated.
 
 RULES:
 - Always call every agent. Never skip any step.
-- Prefer run_parallel_agents for step 2 — do not call backend/ci/deploy individually.
+- Prefer run_parallel_agents for step 3 — do not call backend/ci/deploy individually.
 - After all tools have been called, summarize what was built in 2-3 sentences.
 """
 
@@ -94,13 +99,14 @@ class ForgeADKOrchestrator:
     """
 
     AGENT_PORTS = {
-        "planner":  8101,
-        "backend":  8102,
-        "frontend": 8103,
-        "security": 8104,
-        "ci":       8105,
-        "deploy":   8106,
-        "reviewer": 8107,
+        "planner":         8101,
+        "backend":         8102,
+        "frontend":        8103,
+        "security":        8104,
+        "ci":              8105,
+        "deploy":          8106,
+        "reviewer":        8107,
+        "project_manager": 8108,
     }
 
     def __init__(
@@ -209,31 +215,38 @@ class ForgeADKOrchestrator:
         if verbose:
             print("  [ADK] Orchestrator starting...")
 
+        from .tools import PipelineAbortError
+
         # Run the ADK agent — it calls tools (→ A2A → agents) until done
         final_text = ""
-        async for event in runner.run_async(
-            user_id="forge-build",
-            session_id=session.id,
-            new_message=message,
-        ):
-            # Print tool calls in verbose mode
-            if verbose and hasattr(event, "content") and event.content:
-                for part in getattr(event.content, "parts", []):
-                    fn_call = getattr(part, "function_call", None)
-                    fn_resp = getattr(part, "function_response", None)
-                    if fn_call:
-                        print(f"  [ADK] → {fn_call.name}(...)")
-                    elif fn_resp:
-                        resp_text = str(getattr(fn_resp, "response", ""))[:120]
-                        print(f"  [ADK] ← {fn_resp.name}: {resp_text}")
-
-            # Capture final text response
-            if hasattr(event, "is_final_response") and event.is_final_response():
-                if event.content:
+        try:
+            async for event in runner.run_async(
+                user_id="forge-build",
+                session_id=session.id,
+                new_message=message,
+            ):
+                # Print tool calls in verbose mode
+                if verbose and hasattr(event, "content") and event.content:
                     for part in getattr(event.content, "parts", []):
-                        t = getattr(part, "text", None)
-                        if t:
-                            final_text += t
+                        fn_call = getattr(part, "function_call", None)
+                        fn_resp = getattr(part, "function_response", None)
+                        if fn_call:
+                            print(f"  [ADK] → {fn_call.name}(...)")
+                        elif fn_resp:
+                            resp_text = str(getattr(fn_resp, "response", ""))[:120]
+                            print(f"  [ADK] ← {fn_resp.name}: {resp_text}")
+
+                # Capture final text response
+                if hasattr(event, "is_final_response") and event.is_final_response():
+                    if event.content:
+                        for part in getattr(event.content, "parts", []):
+                            t = getattr(part, "text", None)
+                            if t:
+                                final_text += t
+        except PipelineAbortError as exc:
+            if verbose:
+                print(f"\n  [ADK] Pipeline aborted: {exc}")
+            artifacts.errors.append(f"Pipeline aborted: {exc}")
 
         if verbose and final_text:
             print(f"\n  [ADK] {final_text.strip()}")
@@ -244,4 +257,5 @@ class ForgeADKOrchestrator:
             "files_written": artifacts.files,
             "errors": artifacts.errors,
             "review": artifacts.review,
+            "aborted": artifacts.aborted,
         }

@@ -66,23 +66,7 @@ class CIAgent(BaseAgent):
         "Generates CI/CD configuration: GitHub Actions workflows, "
         "Dockerfile, docker-compose.yml, and build/test pipelines."
     )
-    role = (
-        "You are Forge CI, a DevOps engineer specializing in CI/CD pipelines "
-        "and containerization.\n\n"
-        "RULES:\n"
-        "- Write COMPLETE files. Never use placeholders like '...' or '# TODO'.\n"
-        "- Generate GitHub Actions workflows that: lint, test, and build.\n"
-        "- Use Docker multi-stage builds to minimize image size.\n"
-        "- Use .dockerignore to exclude unnecessary files.\n"
-        "- Pin dependency versions in workflows for reproducibility.\n"
-        "- Use secrets for API keys and credentials (never hardcode).\n"
-        "- Match the tech stack chosen by the planner exactly.\n\n"
-        "When writing files, use this exact format for EACH file:\n\n"
-        "```file:path/to/file.ext\n"
-        "<complete file contents here>\n"
-        "```\n\n"
-        "Write every file in full."
-    )
+    role = ADK_INSTRUCTION
 
     def generate_ci(self, spec: str, decisions: dict, rules: str = "") -> str:
         """Generate CI/CD config files. Returns raw LLM response."""
@@ -101,11 +85,12 @@ class CIAgent(BaseAgent):
 {rules or "(Use sensible defaults)"}
 
 Generate the COMPLETE CI/CD configuration:
-1. `.github/workflows/ci.yml` -- lint + test on every push/PR
-2. `.github/workflows/deploy.yml` -- build and deploy on merge to main
-3. `Dockerfile` -- production-ready multi-stage build
-4. `.dockerignore` -- exclude dev files and secrets
-5. `docker-compose.yml` -- local development setup
+1. `.github/workflows/ci.yml` — install, lint, and test on every push/PR
+2. `Dockerfile` — single-stage production build (unless image size is a documented concern)
+3. `.dockerignore` — exclude venv, node_modules, .env, .git
+4. `docker-compose.yml` — only if the stack includes Redis or multiple services
+
+Do NOT generate a separate deploy workflow — Railway/Render auto-deploy from GitHub.
 
 Use this format for each file:
 
