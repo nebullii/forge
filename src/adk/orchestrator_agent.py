@@ -88,6 +88,91 @@ RULES:
 """
 
 
+# Maps user-facing agent names to their tool function names
+_AGENT_TOOL_MAP: Dict[str, str] = {
+    "backend":  "call_backend_agent",
+    "frontend": "call_frontend_agent",
+    "security": "call_security_agent",
+    "ci":       "call_ci_agent",
+    "deploy":   "call_deploy_agent",
+}
+
+# Infrastructure tools that always run regardless of agent selection
+_INFRA_TOOLS = {
+    "call_planner",
+    "call_project_manager",
+    "run_parallel_agents",
+    "call_reviewer_agent",
+}
+
+_AGENT_DESCRIPTIONS: Dict[str, str] = {
+    "backend":  "call_backend_agent  — Generate backend (API, DB, services).",
+    "frontend": "call_frontend_agent — Generate frontend UI. Needs backend first.",
+    "security": "call_security_agent — OWASP audit + code hardening.",
+    "ci":       "call_ci_agent       — GitHub Actions, Dockerfile, docker-compose.",
+    "deploy":   "call_deploy_agent   — Railway / Render / Vercel / Fly.io configs.",
+}
+
+
+def _constrain_to_agents(
+    all_tools: list,
+    allowed_agents: List[str],
+) -> tuple:
+    """Return (prompt, tools) filtered to only the selected content agents.
+
+    Infrastructure tools (planner, project_manager, run_parallel_agents,
+    reviewer) are always kept. Content agent tools are filtered by allowed_agents.
+    The returned prompt is dynamically generated to match the filtered tool set.
+    """
+    allowed_set  = set(allowed_agents)
+    active_names = _INFRA_TOOLS | {
+        _AGENT_TOOL_MAP[n] for n in allowed_set if n in _AGENT_TOOL_MAP
+    }
+    tools = [t for t in all_tools if t.__name__ in active_names]
+
+    # Build tool listing
+    tool_lines = [
+        "- call_planner            — Analyze spec → build plan. Call FIRST.",
+        "- call_project_manager    — Enrich plan with agent assignments. Call SECOND.",
+        "- run_parallel_agents     — Run independent agents concurrently.",
+    ]
+    for name in allowed_agents:
+        if name in _AGENT_DESCRIPTIONS:
+            tool_lines.append(f"- {_AGENT_DESCRIPTIONS[name]}")
+    tool_lines.append("- call_reviewer_agent     — Final review. Call LAST.")
+
+    # Build execution steps
+    parallel = [n for n in ("backend", "ci", "deploy") if n in allowed_set]
+    sequential = [n for n in ("frontend", "security") if n in allowed_set]
+
+    steps = [
+        "1. call_planner(spec, rules)",
+        "2. call_project_manager(spec, rules)",
+    ]
+    step_n = 3
+    if parallel:
+        steps.append(
+            f"{step_n}. run_parallel_agents(\"{','.join(parallel)}\", spec, rules)"
+        )
+        step_n += 1
+    for name in sequential:
+        steps.append(f"{step_n}. call_{name}_agent(spec, rules)")
+        step_n += 1
+    steps.append(f"{step_n}. call_reviewer_agent(spec, rules)")
+
+    prompt = (
+        "You are Forge Orchestrator, coordinating specialized AI agents to build "
+        "software projects from a specification.\n\n"
+        "Available tools:\n" + "\n".join(tool_lines) + "\n\n"
+        "Execution order — follow exactly:\n" + "\n".join(steps) + "\n\n"
+        "RULES:\n"
+        "- Call every listed agent. Never skip a step.\n"
+        "- Use run_parallel_agents for step 3 agents.\n"
+        "- Summarize what was built in 2-3 sentences after all tools have been called.\n"
+    )
+    return prompt, tools
+
+
 class ForgeADKOrchestrator:
     """Orchestrates a multi-agent build using Google ADK LlmAgent + A2A protocol.
 
@@ -132,8 +217,13 @@ class ForgeADKOrchestrator:
             else:
                 self._clients[name] = A2AClient.for_agent(agent)
 
-    def _build_adk_agent(self, artifacts: BuildArtifacts, deploy_md: str):
-        """Create the ADK LlmAgent with all agent tools wired in."""
+    def _build_adk_agent(
+        self,
+        artifacts: BuildArtifacts,
+        deploy_md: str,
+        allowed_agents: Optional[List[str]] = None,
+    ):
+        """Create the ADK LlmAgent with tools filtered to the allowed agent set."""
         try:
             from google.adk.agents import LlmAgent
         except ImportError:
@@ -144,27 +234,44 @@ class ForgeADKOrchestrator:
 
         from .llm_bridge import create_forge_llm
 
-        llm = create_forge_llm(self.provider)
-        tools = make_agent_tools(self._clients, artifacts, deploy_md)
+        llm       = create_forge_llm(self.provider)
+        all_tools = make_agent_tools(self._clients, artifacts, deploy_md)
+
+        if allowed_agents is not None:
+            prompt, tools = _constrain_to_agents(all_tools, allowed_agents)
+        else:
+            prompt, tools = ORCHESTRATOR_PROMPT, all_tools
 
         return LlmAgent(
             name="forge-orchestrator",
             description="Coordinates specialized agents to build software projects",
             model=llm,
-            instruction=ORCHESTRATOR_PROMPT,
+            instruction=prompt,
             tools=tools,
         )
 
-    def run(self, spec: str, rules: str, verbose: bool = False) -> Dict[str, Any]:
+    def run(
+        self,
+        spec: str,
+        rules: str,
+        verbose: bool = False,
+        allowed_agents: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
         """Run the full multi-agent build via ADK LlmAgent + A2A.
 
         Returns:
             {decisions, tasks, files_written, errors, review}
         """
-        return asyncio.run(self.run_async(spec, rules, verbose=verbose))
+        return asyncio.run(
+            self.run_async(spec, rules, verbose=verbose, allowed_agents=allowed_agents)
+        )
 
     async def run_async(
-        self, spec: str, rules: str, verbose: bool = False
+        self,
+        spec: str,
+        rules: str,
+        verbose: bool = False,
+        allowed_agents: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Async version of run()."""
         try:
@@ -186,7 +293,7 @@ class ForgeADKOrchestrator:
         artifacts = BuildArtifacts()
 
         # Build the ADK agent with tools bound to this run's artifacts
-        adk_agent = self._build_adk_agent(artifacts, deploy_md)
+        adk_agent = self._build_adk_agent(artifacts, deploy_md, allowed_agents=allowed_agents)
 
         # Set up runner + session
         session_service = InMemorySessionService()
