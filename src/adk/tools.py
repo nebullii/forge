@@ -17,6 +17,10 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 
+class PipelineAbortError(RuntimeError):
+    """Raised when a critical pipeline stage fails and execution cannot continue."""
+
+
 @dataclass
 class BuildArtifacts:
     """Shared state written to by tools, read by orchestrator after run."""
@@ -25,6 +29,7 @@ class BuildArtifacts:
     files: List[Tuple[str, str]] = field(default_factory=list)  # (path, content)
     errors: List[str] = field(default_factory=list)
     review: Optional[Dict] = None
+    aborted: bool = False
 
 
 def make_agent_tools(clients: dict, artifacts: BuildArtifacts, deploy_md: str = "") -> list:
@@ -68,8 +73,10 @@ def make_agent_tools(clients: dict, artifacts: BuildArtifacts, deploy_md: str = 
             f"## Spec\n{spec}\n\n## Rules\n{rules}",
         )
         if not result.success:
-            artifacts.errors.append(f"Planner failed: {result.error}")
-            return f"ERROR: Planner failed — {result.error}"
+            artifacts.aborted = True
+            msg = f"Planner failed: {result.error}"
+            artifacts.errors.append(msg)
+            raise PipelineAbortError(msg)
 
         plan = result.get_data() or {}
         artifacts.decisions = plan.get("decisions", {})
@@ -219,6 +226,41 @@ def make_agent_tools(clients: dict, artifacts: BuildArtifacts, deploy_md: str = 
         paths = [f[0] for f in files]
         return f"Deploy config complete. {len(files)} files: {', '.join(paths)}"
 
+    def call_project_manager(spec: str, rules: str) -> str:
+        """Enrich the build plan: assign each task to the right agent and generate
+        a targeted, self-contained prompt per task.
+
+        Call this AFTER call_planner and BEFORE any other agent.
+
+        Args:
+            spec: Full contents of the project spec
+            rules: Full contents of the build rules
+        """
+        result = _send(
+            "project_manager",
+            "Enrich this build plan with agent assignments and per-task prompts.",
+            context={
+                "plan": {"decisions": artifacts.decisions, "tasks": artifacts.tasks},
+                "spec": spec,
+                "rules": rules,
+            },
+        )
+        if not result.success:
+            artifacts.aborted = True
+            msg = f"Project Manager failed: {result.error}"
+            artifacts.errors.append(msg)
+            raise PipelineAbortError(msg)
+
+        enriched = result.get_data() or {}
+        enriched_tasks = enriched.get("tasks", [])
+        if enriched_tasks:
+            artifacts.tasks = enriched_tasks
+
+        assignments = ", ".join(
+            f"{t.get('id','?')}→{t.get('agent','?')}" for t in enriched_tasks[:5]
+        )
+        return f"Tasks enriched. {len(enriched_tasks)} tasks assigned. {assignments}"
+
     def call_reviewer_agent(spec: str, rules: str) -> str:
         """Review all generated code for correctness, consistency, and security.
 
@@ -299,6 +341,7 @@ def make_agent_tools(clients: dict, artifacts: BuildArtifacts, deploy_md: str = 
 
     return [
         call_planner,
+        call_project_manager,
         run_parallel_agents,
         call_backend_agent,
         call_frontend_agent,

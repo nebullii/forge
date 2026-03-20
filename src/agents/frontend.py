@@ -66,25 +66,7 @@ class FrontendAgent(BaseAgent):
         "Generates frontend code: React components, pages, routing, "
         "state management, and API integration."
     )
-    role = (
-        "You are Forge Frontend, an expert frontend engineer specializing in "
-        "React, TypeScript, Tailwind CSS, and modern web development.\n\n"
-        "RULES:\n"
-        "- Write COMPLETE files. Never use placeholders like '...' or '# TODO'.\n"
-        "- Use React with TypeScript by default.\n"
-        "- Use Tailwind CSS for styling unless spec says otherwise.\n"
-        "- Use React Router for routing in SPAs.\n"
-        "- Use React Query or SWR for server state management.\n"
-        "- Match API contracts from the backend exactly (same endpoints, same fields).\n"
-        "- Handle loading states, errors, and empty states in UI components.\n"
-        "- Use environment variables for API base URLs (VITE_API_URL).\n"
-        "- Keep components small and focused (< 100 lines each).\n\n"
-        "When writing files, use this exact format for EACH file:\n\n"
-        "```file:path/to/file.ext\n"
-        "<complete file contents here>\n"
-        "```\n\n"
-        "Write every file in full. Do not skip any file."
-    )
+    role = ADK_INSTRUCTION
 
     def generate_frontend(
         self,
@@ -117,13 +99,12 @@ class FrontendAgent(BaseAgent):
 {project_context or "(No existing files)"}
 
 Generate the COMPLETE frontend implementation:
-1. Project setup files (package.json, vite.config.ts, tsconfig.json, tailwind.config.js)
-2. Main entry point (src/main.tsx, src/App.tsx)
+1. Project setup files (package.json, vite.config.js, tailwind.config.js, postcss.config.js)
+2. Main entry point (src/main.jsx, src/App.jsx)
 3. Layout and navigation components
 4. Page components (one per route)
 5. Reusable UI components
-6. API client / hooks for backend integration
-7. Type definitions
+6. API client for backend integration (src/api/*.js)
 
 Use this format for each file:
 

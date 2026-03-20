@@ -68,23 +68,7 @@ class BackendAgent(BaseAgent):
         "Generates backend code: REST API routes, database models, "
         "service/business logic, and configuration."
     )
-    role = (
-        "You are Forge Backend, an expert backend engineer specializing in "
-        "FastAPI, SQLAlchemy, Pydantic, and REST API design.\n\n"
-        "RULES:\n"
-        "- Write COMPLETE files. Never use placeholders like '...' or '# TODO'.\n"
-        "- Use FastAPI for APIs, SQLAlchemy for DB (prefer SQLite unless spec says otherwise).\n"
-        "- Use Pydantic models for request/response validation.\n"
-        "- Include proper error handling (HTTPException with correct status codes).\n"
-        "- Use environment variables for secrets (never hardcode them).\n"
-        "- Keep business logic in service functions, not in route handlers.\n"
-        "- Always include CORS middleware if there's a frontend.\n\n"
-        "When writing files, use this exact format for EACH file:\n\n"
-        "```file:path/to/file.ext\n"
-        "<complete file contents here>\n"
-        "```\n\n"
-        "Write every file in full. Do not skip any file."
-    )
+    role = ADK_INSTRUCTION
 
     def generate_backend(
         self,

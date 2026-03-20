@@ -210,11 +210,23 @@ def cmd_new(args):
     if policy_src.exists():
         shutil.copy(policy_src, forge_path / "firewall_policy.json")
 
+    # Copy skill files
+    skills_src = TEMPLATES_DIR / "common" / "skills"
+    if skills_src.exists():
+        skills_dst = forge_path / "skills"
+        skills_dst.mkdir(exist_ok=True)
+        count = 0
+        for skill_file in skills_src.glob("*.md"):
+            shutil.copy(skill_file, skills_dst / skill_file.name)
+            count += 1
+
     print(f"Created {project_name}/")
     print(f"  .forge/spec.md    ✓")
     print(f"  .forge/rules.md   ✓")
     if (forge_path / "deploy.md").exists():
         print(f"  .forge/deploy.md  ✓")
+    if skills_src.exists():
+        print(f"  .forge/skills/    ✓  ({count} skill files)")
     print()
     print(f"Next steps:")
     print(f"  cd {project_name}")
@@ -318,6 +330,17 @@ def cmd_init(args):
     project_name = Path.cwd().name
     _create_default_files(forge_path, project_name)
 
+    # Copy skill files
+    skills_src = TEMPLATES_DIR / "common" / "skills"
+    if skills_src.exists():
+        skills_dst = forge_path / "skills"
+        skills_dst.mkdir(exist_ok=True)
+        count = 0
+        for skill_file in skills_src.glob("*.md"):
+            shutil.copy(skill_file, skills_dst / skill_file.name)
+            count += 1
+        print(f"  .forge/skills/    ✓  ({count} skill files)")
+
     print("")
     print("Next: Edit .forge/spec.md with your idea")
 
@@ -357,6 +380,156 @@ def cmd_templates(args):
     print()
 
 
+def _validate_api_key_format(provider: str, key: str) -> tuple[bool, str]:
+    """Check that an API key has the expected prefix and minimum length."""
+    key = key.strip()
+    if not key:
+        return False, "API key cannot be empty"
+
+    checks = {
+        "anthropic": ("sk-ant-", 40),
+        "openai":    ("sk-",    40),
+        "together":  ("",       32),
+    }
+
+    if provider in checks:
+        prefix, min_len = checks[provider]
+        if prefix and not key.startswith(prefix):
+            return False, f"Expected key starting with '{prefix}'"
+        if len(key) < min_len:
+            return False, f"Key looks too short (expected ≥{min_len} chars)"
+
+    return True, ""
+
+
+def _test_provider_connection(provider: str, api_key: str, model: str) -> tuple[bool, str]:
+    """Make a minimal API call to verify the key works."""
+    try:
+        if provider == "anthropic":
+            import anthropic
+            client = anthropic.Anthropic(api_key=api_key)
+            client.messages.create(
+                model=model,
+                max_tokens=10,
+                messages=[{"role": "user", "content": "hi"}],
+            )
+        elif provider in ("openai", "together"):
+            import openai
+            base_url = "https://api.together.xyz/v1" if provider == "together" else None
+            client = openai.OpenAI(api_key=api_key, base_url=base_url)
+            client.chat.completions.create(
+                model=model,
+                max_tokens=10,
+                messages=[{"role": "user", "content": "hi"}],
+            )
+        elif provider == "ollama":
+            import requests
+            resp = requests.get("http://localhost:11434/api/tags", timeout=5)
+            resp.raise_for_status()
+        else:
+            return True, "Unknown provider — skipping connection test"
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
+def cmd_setup(args):
+    """Interactive setup wizard: pick provider, enter API key, validate, save."""
+    from .config import CONFIG_DIR, CONFIG_FILE, load_config, save_config
+
+    divider = "─" * 50
+
+    print()
+    print(divider)
+    print("  Forge Setup Wizard")
+    print(divider)
+    print()
+
+    providers = [
+        ("anthropic", "Anthropic Claude", "claude-sonnet-4-20250514", "https://console.anthropic.com/settings/keys"),
+        ("openai",    "OpenAI GPT",       "gpt-4o",                  "https://platform.openai.com/api-keys"),
+        ("together",  "Together AI",      "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo", "https://api.together.ai/settings/api-keys"),
+        ("ollama",    "Ollama (local)",   "llama3.1",                 ""),
+    ]
+
+    print("Choose your AI provider:\n")
+    for i, (_, label, model, _url) in enumerate(providers, 1):
+        print(f"  {i}. {label}  ({model})")
+    print()
+
+    try:
+        while True:
+            choice = input(f"Provider (1-{len(providers)}): ").strip()
+            try:
+                idx = int(choice) - 1
+                if 0 <= idx < len(providers):
+                    break
+                print(f"  Enter a number between 1 and {len(providers)}")
+            except ValueError:
+                print("  Enter a number")
+    except KeyboardInterrupt:
+        print("\nCancelled.")
+        return
+
+    provider_id, provider_label, default_model, key_url = providers[idx]
+
+    # Ollama needs no API key
+    api_key = ""
+    if provider_id != "ollama":
+        print()
+        if key_url:
+            print(f"  Get your API key at: {key_url}")
+        try:
+            while True:
+                api_key = input(f"  {provider_label} API key: ").strip()
+                ok, msg = _validate_api_key_format(provider_id, api_key)
+                if ok:
+                    break
+                print(f"  Invalid format: {msg}")
+        except KeyboardInterrupt:
+            print("\nCancelled.")
+            return
+
+    # Test connection
+    print()
+    print("  Testing connection...", end="", flush=True)
+    ok, err = _test_provider_connection(provider_id, api_key, default_model)
+    if ok:
+        print(" OK")
+    else:
+        print(f" FAILED\n  Error: {err}")
+        try:
+            cont = input("  Save anyway? [y/N]: ").strip().lower()
+            if cont != "y":
+                print("  Setup cancelled.")
+                return
+        except KeyboardInterrupt:
+            print("\nCancelled.")
+            return
+
+    # Build and save config
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    existing = load_config() if CONFIG_FILE.exists() else {}
+    existing_providers = existing.get("providers", [])
+
+    # Remove any existing entry for this provider
+    existing_providers = [p for p in existing_providers if p.get("name") != provider_id]
+
+    new_entry: dict = {"name": provider_id, "model": default_model}
+    if provider_id == "ollama":
+        new_entry["base_url"] = "http://localhost:11434"
+    else:
+        new_entry["api_key"] = api_key
+
+    config_to_save = {"providers": [new_entry] + existing_providers}
+    save_config(config_to_save)
+
+    print()
+    print(f"  Config saved to {CONFIG_FILE}")
+    print(divider)
+    print()
+
+
 def cmd_build(args):
     """Build the project using AI agents."""
     forge_path = Path(FORGE_DIR)
@@ -368,19 +541,29 @@ def cmd_build(args):
 
     from .config import ensure_config, get_provider_config
     from .orchestrator import BuildOrchestrator
+    from .ui import BuildUI
 
     config = ensure_config()
 
     try:
         provider_config = get_provider_config(config, getattr(args, 'provider', None))
-    except ValueError as e:
-        print(f"Error: {e}")
-        sys.exit(1)
+    except ValueError:
+        print("No API key configured. Running setup wizard...\n")
+        cmd_setup(args)
+        # Re-load config after setup
+        config = ensure_config()
+        try:
+            provider_config = get_provider_config(config, getattr(args, 'provider', None))
+        except ValueError as e2:
+            print(f"Error: {e2}")
+            sys.exit(1)
 
     feature = getattr(args, 'feature', None)
     no_review = getattr(args, 'no_review', False)
     verbose = getattr(args, 'verbose', False)
     use_adk = getattr(args, 'adk', False)
+
+    ui = BuildUI(verbose=verbose)
 
     if use_adk:
         print(f"Building with {provider_config} [ADK multi-agent mode]...")
@@ -394,15 +577,11 @@ def cmd_build(args):
         review=not no_review,
         verbose=verbose,
         use_adk=use_adk,
+        ui=ui,
     )
 
     try:
         orchestrator.run(feature=feature)
-        print("Build complete!")
-        print("")
-        print("Next steps:")
-        print("  forge dev          # Run locally")
-        print("  forge build --feature 'add user auth'  # Add features")
     except KeyboardInterrupt:
         print("")
         print("Build paused. Run 'forge build' to resume.")
@@ -549,6 +728,10 @@ def main():
     build_parser.add_argument("--adk", action="store_true",
                               help="Use ADK multi-agent pipeline (Backend, Frontend, Security, CI, Deploy)")
     build_parser.set_defaults(func=cmd_build)
+
+    # forge setup
+    setup_parser = subparsers.add_parser("setup", help="Interactive setup wizard (API key + provider)")
+    setup_parser.set_defaults(func=cmd_setup)
 
     # forge config
     config_parser = subparsers.add_parser("config", help="Manage configuration")
