@@ -74,7 +74,8 @@ class DevServer:
     def _find_python_entry(self) -> Optional[tuple[str, list[str]]]:
         """Search for a FastAPI/Flask entry point up to 3 levels deep."""
         skip = {"node_modules", ".forge", "__pycache__", ".git", "venv", ".venv"}
-        for py_file in sorted(self.project_path.rglob("main.py")):
+        # Sort by depth (shallowest first) so backend/main.py wins over backend/app/main.py
+        for py_file in sorted(self.project_path.rglob("main.py"), key=lambda p: len(p.parts)):
             if any(s in py_file.parts for s in skip):
                 continue
             # Don't go deeper than 3 levels
@@ -98,7 +99,7 @@ class DevServer:
                 return ("python-flask", ["python", str(rel)])
 
         # Also check app.py
-        for py_file in sorted(self.project_path.rglob("app.py")):
+        for py_file in sorted(self.project_path.rglob("app.py"), key=lambda p: len(p.parts)):
             if any(s in py_file.parts for s in skip):
                 continue
             try:
@@ -164,8 +165,26 @@ class DevServer:
                     capture_output=True, text=True,
                 )
 
+    def _detect_frontend(self) -> Optional[tuple[Path, list[str]]]:
+        """Detect a frontend subdirectory that needs its own dev server."""
+        for name in ["frontend", "client", "web"]:
+            pkg = self.project_path / name / "package.json"
+            if pkg.exists():
+                try:
+                    data = json.loads(pkg.read_text())
+                    scripts = data.get("scripts", {})
+                    if "dev" in scripts:
+                        return (self.project_path / name, ["npm", "run", "dev"])
+                    if "start" in scripts:
+                        return (self.project_path / name, ["npm", "start"])
+                except (json.JSONDecodeError, OSError):
+                    pass
+        return None
+
     def run(self, port: int = 8080, auto_fix: bool = True):
         """Run the development server with optional crash auto-fix.
+
+        For full-stack projects (backend + frontend), starts both servers.
 
         Args:
             port: Port number for the server.
@@ -181,8 +200,25 @@ class DevServer:
         # Auto-install dependencies before starting
         self._install_deps(project_type)
 
+        # Detect frontend for full-stack projects
+        frontend = None
+        frontend_process = None
+        if project_type in ("python-uvicorn", "python-flask"):
+            frontend = self._detect_frontend()
+            if frontend:
+                frontend_dir, frontend_cmd = frontend
+                # Install frontend deps
+                if not (frontend_dir / "node_modules").exists():
+                    print(f"Installing frontend dependencies...")
+                    subprocess.run(
+                        ["npm", "install"], cwd=frontend_dir,
+                        capture_output=True, text=True,
+                    )
+
         # Add port to command
         if project_type == "python-uvicorn":
+            if not auto_fix:
+                command.append("--reload")
             command.extend(["--port", str(port)])
         elif project_type == "python-flask":
             command.extend(["--port", str(port)])
@@ -194,9 +230,24 @@ class DevServer:
         def signal_handler(sig, frame):
             if self.process:
                 self.process.terminate()
+            if frontend_process:
+                frontend_process.terminate()
             sys.exit(0)
 
         signal.signal(signal.SIGINT, signal_handler)
+
+        # Start frontend in background if detected
+        if frontend:
+            frontend_dir, frontend_cmd = frontend
+            frontend_port = port + 1
+            os.environ["PORT"] = str(frontend_port)
+            print(f"Starting frontend on port {frontend_port}")
+            print(f"   http://localhost:{frontend_port}")
+            print()
+            frontend_process = subprocess.Popen(
+                frontend_cmd, cwd=frontend_dir,
+                stdout=sys.stdout, stderr=sys.stderr,
+            )
 
         attempt = 0
         while True:
@@ -228,6 +279,10 @@ class DevServer:
                 break
 
             print(f"\n--- Restarting server (attempt {attempt}/{MAX_FIX_ATTEMPTS}) ---\n")
+
+        # Clean up frontend process
+        if frontend_process and frontend_process.poll() is None:
+            frontend_process.terminate()
 
     def _run_process(self, command: list[str]) -> tuple[int, str]:
         """Run the server process and capture stderr on crash.
