@@ -72,6 +72,23 @@ CLI TOOLS:
   → Rust (clap)                   — use when the CLI needs maximum performance or
                                     processes large amounts of data
 
+MOBILE APPS (iOS / Android):
+  → Swift + SwiftUI     — native iOS. Use when the spec says "iPhone app", "iOS app",
+                          or needs device hardware (mic, camera, sensors, Bluetooth,
+                          HealthKit, ARKit). Single Xcode project, no backend unless needed.
+  → Kotlin + Jetpack Compose — native Android. Use when the spec says "Android app".
+  → React Native        — cross-platform mobile. Use when the spec wants BOTH iOS and
+                          Android from one codebase and doesn't need deep hardware access.
+  → Flutter (Dart)      — cross-platform mobile. Good for custom UI-heavy apps.
+  → PWA (HTML+JS)       — "install to home screen" mobile experience. Use when the app
+                          is simple enough to be a web page but the user wants it to feel
+                          like a native app. Works offline with service workers.
+
+  IMPORTANT: If the spec mentions "iPhone", "iOS", "Android", "mobile app", or device
+  hardware (microphone, camera, GPS, Bluetooth, accelerometer) — pick a NATIVE stack.
+  Do NOT default to a web app. Web Audio API on mobile Safari has severe limitations
+  (no background audio, no lock screen, auto-pause on tab switch).
+
 REAL-TIME / EVENT-DRIVEN:
   → Phoenix (Elixir)  — built for this, LiveView, PubSub, channels
   → Node.js + Socket.io — good if the team is JS-first and real-time is secondary
@@ -293,6 +310,18 @@ API-ONLY SERVICES (no frontend, consumed by clients or other services):
   Go (Gin/Chi)     — high throughput, strong typing, single binary
   Rust (Axum)      — maximum performance, memory safety, edge/embedded constraints
   Express/Hono     — lightweight JSON APIs for JS teams
+
+MOBILE APPS (iOS / Android):
+  Swift + SwiftUI     — native iOS. Use when spec says "iPhone app", "iOS app", or
+                        needs device hardware (mic, camera, sensors, Bluetooth).
+  Kotlin + Jetpack Compose — native Android.
+  React Native        — cross-platform. Use when spec wants both iOS and Android.
+  Flutter (Dart)      — cross-platform, custom UI-heavy apps.
+  PWA (HTML+JS)       — web app that installs to home screen. Use for simple mobile
+                        experiences that don't need deep hardware access.
+
+  IMPORTANT: If the spec mentions "iPhone", "iOS", "Android", "mobile app", or device
+  hardware — pick a NATIVE stack. Do NOT default to a web app.
 
 CLI TOOLS:
   Python (Click/Typer) — fast to write, great for scripting
