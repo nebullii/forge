@@ -29,21 +29,11 @@ class DevServer:
     def detect_project_type(self) -> tuple[str, list[str]]:
         """Detect project type and return (type, command)."""
 
-        # Python with uvicorn (FastAPI/Starlette) — check root and common subdirs
-        for py_dir in ["", "backend", "server", "api", "app", "src"]:
-            base = self.project_path / py_dir if py_dir else self.project_path
-            for entry in ["main.py", "app.py"]:
-                candidate = base / entry
-                if candidate.exists():
-                    content = candidate.read_text()[:2000]
-                    if "fastapi" in content.lower() or "starlette" in content.lower():
-                        module = f"{entry.replace('.py', '')}:app"
-                        if py_dir:
-                            module = f"{py_dir}.{module}"
-                        return ("python-uvicorn", ["uvicorn", module, "--reload"])
-                    if "flask" in content.lower():
-                        cmd = ["python", str(candidate.relative_to(self.project_path))]
-                        return ("python-flask", cmd)
+        # Python with uvicorn (FastAPI/Starlette) — search for main.py/app.py
+        # anywhere in the project (up to 3 levels deep)
+        python_entry = self._find_python_entry()
+        if python_entry:
+            return python_entry
 
         # Python generic
         if (self.project_path / "main.py").exists():
@@ -80,6 +70,55 @@ class DevServer:
                 return ("static", ["python", "-m", "http.server", "--directory", static_dir])
 
         return ("unknown", [])
+
+    def _find_python_entry(self) -> Optional[tuple[str, list[str]]]:
+        """Search for a FastAPI/Flask entry point up to 3 levels deep."""
+        skip = {"node_modules", ".forge", "__pycache__", ".git", "venv", ".venv"}
+        for py_file in sorted(self.project_path.rglob("main.py")):
+            if any(s in py_file.parts for s in skip):
+                continue
+            # Don't go deeper than 3 levels
+            try:
+                rel = py_file.relative_to(self.project_path)
+            except ValueError:
+                continue
+            if len(rel.parts) > 4:
+                continue
+
+            try:
+                content = py_file.read_text()[:2000]
+            except OSError:
+                continue
+
+            if "fastapi" in content.lower() or "starlette" in content.lower():
+                # Build uvicorn module path: backend/app/main.py → backend.app.main:app
+                module = str(rel.with_suffix("")).replace("/", ".") + ":app"
+                return ("python-uvicorn", ["uvicorn", module, "--reload"])
+            if "flask" in content.lower():
+                return ("python-flask", ["python", str(rel)])
+
+        # Also check app.py
+        for py_file in sorted(self.project_path.rglob("app.py")):
+            if any(s in py_file.parts for s in skip):
+                continue
+            try:
+                rel = py_file.relative_to(self.project_path)
+            except ValueError:
+                continue
+            if len(rel.parts) > 4:
+                continue
+            try:
+                content = py_file.read_text()[:2000]
+            except OSError:
+                continue
+
+            if "fastapi" in content.lower() or "starlette" in content.lower():
+                module = str(rel.with_suffix("")).replace("/", ".") + ":app"
+                return ("python-uvicorn", ["uvicorn", module, "--reload"])
+            if "flask" in content.lower():
+                return ("python-flask", ["python", str(rel)])
+
+        return None
 
     def run(self, port: int = 8080, auto_fix: bool = True):
         """Run the development server with optional crash auto-fix.
