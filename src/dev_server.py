@@ -120,6 +120,50 @@ class DevServer:
 
         return None
 
+    def _install_deps(self, project_type: str) -> None:
+        """Auto-install project dependencies before starting the server."""
+        skip = {"node_modules", ".forge", "__pycache__", ".git", "venv", ".venv"}
+
+        if project_type in ("python-uvicorn", "python-flask", "python"):
+            # Find all requirements.txt files
+            req_files = [
+                f for f in self.project_path.rglob("requirements.txt")
+                if not any(s in f.parts for s in skip)
+            ]
+            for req in req_files:
+                print(f"Installing dependencies: {req.relative_to(self.project_path)}")
+                result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "-q", "-r", str(req)],
+                    cwd=self.project_path,
+                    capture_output=True, text=True,
+                )
+                if result.returncode != 0:
+                    print(f"  Warning: pip install failed: {result.stderr[:200]}")
+
+        elif project_type == "node":
+            pkg = self.project_path / "package.json"
+            nm = self.project_path / "node_modules"
+            if pkg.exists() and not nm.exists():
+                print("Installing dependencies: npm install")
+                result = subprocess.run(
+                    ["npm", "install"],
+                    cwd=self.project_path,
+                    capture_output=True, text=True,
+                )
+                if result.returncode != 0:
+                    print(f"  Warning: npm install failed: {result.stderr[:200]}")
+
+            # Also check frontend/ subdirectory
+            frontend_pkg = self.project_path / "frontend" / "package.json"
+            frontend_nm = self.project_path / "frontend" / "node_modules"
+            if frontend_pkg.exists() and not frontend_nm.exists():
+                print("Installing dependencies: frontend/npm install")
+                subprocess.run(
+                    ["npm", "install"],
+                    cwd=self.project_path / "frontend",
+                    capture_output=True, text=True,
+                )
+
     def run(self, port: int = 8080, auto_fix: bool = True):
         """Run the development server with optional crash auto-fix.
 
@@ -133,6 +177,9 @@ class DevServer:
             print("Could not detect project type.")
             print("Supported: Python (FastAPI/Flask), Node.js, Go, Static HTML")
             return
+
+        # Auto-install dependencies before starting
+        self._install_deps(project_type)
 
         # Add port to command
         if project_type == "python-uvicorn":
