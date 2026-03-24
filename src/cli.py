@@ -417,12 +417,13 @@ def cmd_init(args):
 
 
 def cmd_dev(args):
-    """Run local development server."""
+    """Run local development server with auto-fix on crash."""
     from .dev_server import DevServer
 
     server = DevServer(Path.cwd())
     port = getattr(args, 'port', None) or 8080
-    server.run(port=port)
+    no_fix = getattr(args, 'no_fix', False)
+    server.run(port=port, auto_fix=not no_fix)
 
 
 def cmd_sprint(args):
@@ -777,8 +778,9 @@ def main():
     init_parser.set_defaults(func=cmd_init)
 
     # forge dev
-    dev_parser = subparsers.add_parser("dev", help="Run local dev server")
-    dev_parser.add_argument("--port", "-p", type=int, default=8080, help="Port number")
+    dev_parser = subparsers.add_parser("dev", help="Run local dev server (auto-fixes crashes)")
+    dev_parser.add_argument("--port", type=int, default=8080, help="Port number")
+    dev_parser.add_argument("--no-fix", action="store_true", help="Disable auto-fix on crash")
     dev_parser.set_defaults(func=cmd_dev)
 
     # forge sprint

@@ -21,6 +21,7 @@ from .security_agent import SecurityAgent
 from .ci_cd import CIAgent
 from .deploy import DeployAgent
 from .project_manager import ProjectManagerAgent
+from .debug import DebugAgent
 
 # ADK agent factories (require google-adk at call time, not import time)
 from .planner import create_planner_agent
@@ -36,7 +37,7 @@ __all__ = [
     # Classic
     "PlannerAgent", "CoderAgent", "ReviewerAgent",
     "BackendAgent", "FrontendAgent", "SecurityAgent", "CIAgent", "DeployAgent",
-    "ProjectManagerAgent",
+    "ProjectManagerAgent", "DebugAgent",
     # ADK factories
     "create_planner_agent", "create_backend_agent", "create_frontend_agent",
     "create_security_agent", "create_ci_agent", "create_deploy_agent",

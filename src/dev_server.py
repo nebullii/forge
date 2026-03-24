@@ -1,15 +1,24 @@
-"""Local development server with auto-detection."""
+"""Local development server with auto-detection and crash auto-fix.
 
+When the server crashes, the DebugAgent reads the traceback, identifies the
+failing file, produces a fix, and restarts the server. This loop runs up to
+MAX_FIX_ATTEMPTS times before giving up.
+"""
+
+import json
 import os
 import subprocess
 import sys
 import signal
 import time
 from pathlib import Path
+from typing import Optional
+
+MAX_FIX_ATTEMPTS = 5
 
 
 class DevServer:
-    """Auto-detecting development server."""
+    """Auto-detecting development server with debug agent integration."""
 
     def __init__(self, project_path: Path):
         self.project_path = project_path
@@ -20,13 +29,13 @@ class DevServer:
 
         # Python with uvicorn (FastAPI/Starlette)
         if (self.project_path / "main.py").exists():
-            content = (self.project_path / "main.py").read_text()
+            content = (self.project_path / "main.py").read_text()[:2000]
             if "fastapi" in content.lower() or "starlette" in content.lower():
                 return ("python-uvicorn", ["uvicorn", "main:app", "--reload"])
 
         # Python with Flask
         if (self.project_path / "app.py").exists():
-            content = (self.project_path / "app.py").read_text()
+            content = (self.project_path / "app.py").read_text()[:2000]
             if "flask" in content.lower():
                 return ("python-flask", ["flask", "run", "--reload"])
 
@@ -39,13 +48,15 @@ class DevServer:
         # Node.js
         package_json = self.project_path / "package.json"
         if package_json.exists():
-            import json
-            pkg = json.loads(package_json.read_text())
-            scripts = pkg.get("scripts", {})
-            if "dev" in scripts:
-                return ("node", ["npm", "run", "dev"])
-            if "start" in scripts:
-                return ("node", ["npm", "start"])
+            try:
+                pkg = json.loads(package_json.read_text())
+                scripts = pkg.get("scripts", {})
+                if "dev" in scripts:
+                    return ("node", ["npm", "run", "dev"])
+                if "start" in scripts:
+                    return ("node", ["npm", "start"])
+            except (json.JSONDecodeError, OSError):
+                pass
 
         # Go
         if (self.project_path / "main.go").exists():
@@ -64,8 +75,13 @@ class DevServer:
 
         return ("unknown", [])
 
-    def run(self, port: int = 8080):
-        """Run the development server."""
+    def run(self, port: int = 8080, auto_fix: bool = True):
+        """Run the development server with optional crash auto-fix.
+
+        Args:
+            port: Port number for the server.
+            auto_fix: If True, use the DebugAgent to fix crashes and restart.
+        """
         project_type, command = self.detect_project_type()
 
         if project_type == "unknown":
@@ -73,7 +89,7 @@ class DevServer:
             print("Supported: Python (FastAPI/Flask), Node.js, Go, Static HTML")
             return
 
-        # Add port to command where applicable
+        # Add port to command
         if project_type == "python-uvicorn":
             command.extend(["--port", str(port)])
         elif project_type == "python-flask":
@@ -83,12 +99,6 @@ class DevServer:
         elif project_type == "node":
             os.environ["PORT"] = str(port)
 
-        print(f"🚀 Starting {project_type} server on port {port}")
-        print(f"   http://localhost:{port}")
-        print("")
-        print("Press Ctrl+C to stop")
-        print("")
-
         def signal_handler(sig, frame):
             if self.process:
                 self.process.terminate()
@@ -96,25 +106,130 @@ class DevServer:
 
         signal.signal(signal.SIGINT, signal_handler)
 
+        attempt = 0
+        while True:
+            print(f"Starting {project_type} server on port {port}")
+            print(f"   http://localhost:{port}")
+            if auto_fix:
+                print(f"   Auto-fix enabled ({MAX_FIX_ATTEMPTS - attempt} attempts remaining)")
+            print()
+
+            exit_code, stderr_output = self._run_process(command)
+
+            if exit_code == 0 or exit_code == -2:  # clean exit or Ctrl+C
+                break
+
+            # Server crashed
+            attempt += 1
+            print(f"\n--- Server crashed (exit code {exit_code}) ---\n")
+
+            if not auto_fix or attempt > MAX_FIX_ATTEMPTS:
+                if attempt > MAX_FIX_ATTEMPTS:
+                    print(f"Gave up after {MAX_FIX_ATTEMPTS} fix attempts.")
+                print("Fix the error above and run forge dev again.")
+                break
+
+            # Try to auto-fix
+            fixed = self._try_auto_fix(stderr_output, attempt)
+            if not fixed:
+                print("Could not auto-fix. Fix the error above and run forge dev again.")
+                break
+
+            print(f"\n--- Restarting server (attempt {attempt}/{MAX_FIX_ATTEMPTS}) ---\n")
+
+    def _run_process(self, command: list[str]) -> tuple[int, str]:
+        """Run the server process and capture stderr on crash.
+
+        Returns (exit_code, stderr_text).
+        """
         try:
             self.process = subprocess.Popen(
                 command,
                 cwd=self.project_path,
                 stdout=sys.stdout,
-                stderr=sys.stderr
+                stderr=subprocess.PIPE,
             )
+
+            # Read stderr in real-time and capture it
+            stderr_lines = []
+            for line in self.process.stderr:
+                decoded = line.decode("utf-8", errors="replace")
+                sys.stderr.write(decoded)
+                sys.stderr.flush()
+                stderr_lines.append(decoded)
+
             self.process.wait()
-        except FileNotFoundError as e:
-            print(f"Error: {command[0]} not found")
-            if project_type == "python-uvicorn":
-                print("Install with: pip install uvicorn")
-            elif project_type == "node":
-                print("Install Node.js from https://nodejs.org")
+            return self.process.returncode or 0, "".join(stderr_lines)
+
+        except FileNotFoundError:
+            msg = f"Error: {command[0]} not found"
+            print(msg)
+            return 1, msg
+        except KeyboardInterrupt:
+            if self.process:
+                self.process.terminate()
+            return -2, ""
+
+    def _try_auto_fix(self, stderr_output: str, attempt: int) -> bool:
+        """Use the DebugAgent to fix the crash.
+
+        Returns True if a fix was applied, False if auto-fix isn't available
+        or the agent couldn't produce a fix.
+        """
+        if not stderr_output.strip():
+            print("  No error output to diagnose.")
+            return False
+
+        # Try to load a provider
+        try:
+            from .config import load_config, get_provider_config
+            from .providers import create_provider
+            from .agents.debug import DebugAgent
+
+            config = load_config()
+            if not config:
+                print("  No config found — cannot auto-fix.")
+                return False
+            provider_config = get_provider_config(config)
+            provider = create_provider(provider_config)
+        except (ValueError, ImportError, Exception) as e:
+            print(f"  Auto-fix unavailable: {e}")
+            return False
+
+        print(f"  Debug agent analyzing crash... ({provider_config})")
+
+        agent = DebugAgent(provider, self.project_path)
+
+        try:
+            fixes = agent.diagnose_and_fix(stderr_output, self.project_path)
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"  Debug agent failed: {e}")
+            return False
+
+        if not fixes:
+            print("  Debug agent couldn't produce a fix.")
+            return False
+
+        # Apply fixes
+        for filepath, content in fixes:
+            full_path = (self.project_path / filepath).resolve()
+            # Safety: don't write outside project root
+            try:
+                full_path.relative_to(self.project_path.resolve())
+            except ValueError:
+                print(f"  Skipping {filepath} (outside project root)")
+                continue
+
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            full_path.write_text(content)
+            print(f"  Fixed: {filepath}")
+
+        return True
 
 
 def cmd_dev(args):
     """Run local development server."""
     server = DevServer(Path.cwd())
-    server.run(port=getattr(args, 'port', None) or 8080)
+    port = getattr(args, 'port', None) or 8080
+    no_fix = getattr(args, 'no_fix', False)
+    server.run(port=port, auto_fix=not no_fix)
