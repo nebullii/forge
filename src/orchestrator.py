@@ -2,6 +2,7 @@
 
 import logging
 import sys
+import threading
 import uuid
 import yaml
 import re
@@ -23,6 +24,14 @@ from .state import (
 )
 from .context import build_context_string
 from .skills import SkillsLoader
+from .collaboration import (
+    ArtifactBus,
+    ContractRegistry,
+    CodeArtifact,
+    DecisionArtifact,
+    BuildLogArtifact,
+    extract_contracts_from_response,
+)
 
 if TYPE_CHECKING:
     from .ui import BuildUI
@@ -70,6 +79,16 @@ class BuildOrchestrator:
         self._classic_agents: dict = {}  # lazy: agent_name → agent instance
         self._skills = skills
 
+        # Collaboration layer — shared artifact bus and contract registry
+        # Load existing contracts for incremental builds (forge build --feature)
+        contracts_path = self.forge_path / "contracts.json"
+        self.bus = ArtifactBus()
+        self.registry = (
+            ContractRegistry.load(contracts_path)
+            if contracts_path.exists()
+            else ContractRegistry()
+        )
+
         self.firewall = AgenticFirewall(
             policy_path=self.forge_path / "firewall_policy.json",
             audit_log=self.forge_path / "firewall_audit.log"
@@ -78,6 +97,7 @@ class BuildOrchestrator:
         self.state = load_build_state(forge_path)
         self.provider_config = provider_config
         self._build_start_time: Optional[float] = None
+        self._state_lock = threading.Lock()  # protects state mutations in parallel mode
 
     def _init_adk_agents(self) -> dict:
         """Initialize all specialized agents as ADK LlmAgent + ADKAgentRunner instances."""
@@ -164,6 +184,9 @@ class BuildOrchestrator:
         self.state.status = "completed"
         self.state.completed_at = datetime.now().isoformat()
         self._save_state()
+
+        # Persist contracts for incremental builds
+        self.registry.save(self.forge_path / "contracts.json")
 
         if self.ui:
             self.ui.build_summary(
@@ -379,78 +402,152 @@ class BuildOrchestrator:
         else:
             print("Phase 2: Building...")
             print("")
-        self._execute_remaining_tasks(spec, rules)
+
+        # Check if we can parallelise: tasks must span multiple agent types
+        agents_used = {(t.agent or "coder") for t in self.state.tasks}
+        if len(agents_used) > 1:
+            self._execute_tasks_parallel(spec, rules)
+        else:
+            self._execute_tasks_sequential(spec, rules)
+
         if self.ui:
             self.ui.phase_end("  Build phase complete")
 
-    def _execute_remaining_tasks(self, spec: str, rules: str):
+    # -- Single-task execution (shared by sequential and parallel paths) ----
+
+    def _run_single_task(self, task_id: str, spec: str, rules: str) -> None:
+        """Execute one task: invoke agent, firewall, write files, publish to bus.
+
+        Thread-safe — uses ``_state_lock`` for shared-state mutations.
+        Raises on failure so the scheduler can track it.
+        """
+        task = self._task_by_id(task_id)
+        if task is None or task.status == "completed":
+            return
+
         total = len(self.state.tasks)
+        idx = next(
+            (i for i, t in enumerate(self.state.tasks) if t.id == task_id), 0
+        )
 
-        for i in range(self.state.current_task_index, total):
-            task = self.state.tasks[i]
+        if self.ui:
+            self.ui.task_start(task.name)
+        else:
+            with self._state_lock:
+                print(f"   [{idx + 1}/{total}] {task.name}")
 
-            if task.status == "completed":
-                continue
-
-            if self.ui:
-                self.ui.task_start(task.name)
-            else:
-                print(f"   [{i+1}/{total}] {task.name}")
-
-            task.status = "in_progress"
-            task.started_at = datetime.now().isoformat()
-            self.state.current_task_index = i
+        task.status = "in_progress"
+        task.started_at = datetime.now().isoformat()
+        with self._state_lock:
             self._save_state()
 
+        project_context = build_context_string(self.project_root, max_tokens=3000)
+
+        agent_name = task.agent or "coder"
+        agent = self._get_classic_agent(agent_name)
+
+        # Inject contract context for frontend tasks
+        prompt_to_use = task.prompt
+        if agent_name == "frontend" and prompt_to_use and len(self.registry) > 0:
+            contracts_block = self.registry.format_for_prompt()
+            backend_code = self.bus.export_files_dict()
+            backend_relevant = {
+                p: c for p, c in backend_code.items()
+                if any(kw in p.lower() for kw in (
+                    "route", "api", "schema", "model", "main", "endpoint",
+                ))
+            }
+            extra = f"\n\n## Backend API Contracts (match these exactly)\n{contracts_block}"
+            if backend_relevant:
+                extra += "\n\n## Backend Code Reference"
+                for fp, content in backend_relevant.items():
+                    extra += f"\n### {fp}\n```\n{content}\n```"
+            prompt_to_use = prompt_to_use + extra
+
+        if prompt_to_use:
+            response = agent.invoke(prompt_to_use)
+        else:
+            task_dict = {
+                "name": task.name,
+                "description": task.description,
+                "files": [],
+            }
+            response = self.coder.generate_files(
+                task_dict, spec, rules,
+                self.state.decisions, project_context,
+            )
+
+        files = agent.extract_files(response)
+
+        # Apply Agentic Firewall
+        allowed_files = []
+        for filepath, content in files:
+            permitted, reason = self.firewall.validate_file_write(filepath, content)
+            if permitted:
+                allowed_files.append((filepath, content))
+            else:
+                if not self.ui:
+                    with self._state_lock:
+                        print(f"      FIREWALL BLOCK: {filepath} ({reason})")
+                self.state.errors.append(f"Firewall blocked {filepath}: {reason}")
+
+        written = agent.write_files(allowed_files)
+
+        # Publish to artifact bus (thread-safe)
+        for filepath, content in allowed_files:
+            self.bus.publish(CodeArtifact(
+                path=filepath, content=content,
+                producer_agent=agent_name, task_id=task.id,
+            ))
+
+        # Extract contracts from backend agent responses
+        if agent_name == "backend":
+            contracts = extract_contracts_from_response(
+                response, producer_agent="backend",
+            )
+            self.registry.register_many(contracts.get("api", []))
+            self.registry.register_many(contracts.get("models", []))
+            self.registry.register_many(contracts.get("events", []))
+
+        task.files_written = written
+        task.status = "completed"
+        task.completed_at = datetime.now().isoformat()
+
+        with self._state_lock:
+            self.state.files_written.extend(written)
+            self._save_state()
+
+        if self.ui:
+            self.ui.task_done(task.name, written)
+        else:
+            with self._state_lock:
+                for f in written:
+                    print(f"      + {f}")
+
+    def _task_by_id(self, task_id: str):
+        """Look up a TaskState by id."""
+        for t in self.state.tasks:
+            if t.id == task_id:
+                return t
+        return None
+
+    def _execute_remaining_tasks(self, spec: str, rules: str):
+        """Backward-compat entry point used by the resume path."""
+        agents_used = {(t.agent or "coder") for t in self.state.tasks}
+        if len(agents_used) > 1:
+            self._execute_tasks_parallel(spec, rules)
+        else:
+            self._execute_tasks_sequential(spec, rules)
+
+    # -- Sequential execution (fallback / single-agent plans) ---------------
+
+    def _execute_tasks_sequential(self, spec: str, rules: str):
+        """Run tasks one at a time (original behaviour)."""
+        for task in self.state.tasks:
+            if task.status == "completed":
+                continue
             try:
-                project_context = build_context_string(
-                    self.project_root, max_tokens=3000
-                )
-
-                agent_name = task.agent or "coder"
-                agent = self._get_classic_agent(agent_name)
-
-                if task.prompt:
-                    # Use the enriched, self-contained prompt from ProjectManagerAgent
-                    response = agent.invoke(task.prompt)
-                else:
-                    # Fallback: CoderAgent with full context (pre-PM behaviour)
-                    task_dict = {
-                        "name": task.name,
-                        "description": task.description,
-                        "files": [],
-                    }
-                    response = self.coder.generate_files(
-                        task_dict, spec, rules,
-                        self.state.decisions, project_context
-                    )
-
-                files = agent.extract_files(response)
-
-                # Apply Agentic Firewall
-                allowed_files = []
-                for filepath, content in files:
-                    permitted, reason = self.firewall.validate_file_write(filepath, content)
-                    if permitted:
-                        allowed_files.append((filepath, content))
-                    else:
-                        if not self.ui:
-                            print(f"      FIREWALL BLOCK: {filepath} ({reason})")
-                        self.state.errors.append(f"Firewall blocked {filepath}: {reason}")
-
-                written = agent.write_files(allowed_files)
-
-                task.files_written = written
-                task.status = "completed"
-                task.completed_at = datetime.now().isoformat()
-                self.state.files_written.extend(written)
-
-                if self.ui:
-                    self.ui.task_done(task.name, written)
-                else:
-                    for f in written:
-                        print(f"      + {f}")
-
+                self._run_single_task(task.id, spec, rules)
             except KeyboardInterrupt:
                 if self.ui:
                     self.ui.spinner_stop()
@@ -467,9 +564,43 @@ class BuildOrchestrator:
                 else:
                     print(f"      ERROR: {e}")
                 continue
+        if not self.ui:
+            print("")
 
-            self._save_state()
+    # -- Parallel execution (multi-agent plans) -----------------------------
 
+    def _execute_tasks_parallel(self, spec: str, rules: str):
+        """Run tasks respecting dependency graph, parallelising where possible."""
+        from .scheduler import build_dependency_graph, ParallelScheduler
+
+        pending = [t for t in self.state.tasks if t.status != "completed"]
+        if not pending:
+            return
+
+        graph = build_dependency_graph(pending)
+        scheduler = ParallelScheduler(max_workers=4)
+
+        if not self.ui:
+            agents = {n.agent for n in graph}
+            print(f"   Parallel scheduler: {len(graph)} tasks across {agents}")
+            print("")
+
+        def _run(task_id: str):
+            self._run_single_task(task_id, spec, rules)
+
+        failed_ids = scheduler.execute(graph, _run)
+
+        # Mark skipped tasks
+        for tid in failed_ids:
+            task = self._task_by_id(tid)
+            if task and task.status != "failed":
+                task.status = "failed"
+                task.error = "Skipped: upstream dependency failed"
+                self.state.errors.append(
+                    f"Task '{task.name}': skipped (dependency failed)"
+                )
+
+        self._save_state()
         if not self.ui:
             print("")
 
@@ -483,14 +614,17 @@ class BuildOrchestrator:
         self.state.status = "reviewing"
         self._save_state()
 
-        files_dict = {}
-        for filepath in self.state.files_written:
-            full_path = self.project_root / filepath
-            if full_path.exists():
-                try:
-                    files_dict[filepath] = full_path.read_text()
-                except Exception:
-                    pass
+        # Prefer bus contents (source of truth) over disk reads
+        files_dict = self.bus.export_files_dict()
+        if not files_dict:
+            # Fallback: read from disk (pre-bus compat or resumed builds)
+            for filepath in self.state.files_written:
+                full_path = self.project_root / filepath
+                if full_path.exists():
+                    try:
+                        files_dict[filepath] = full_path.read_text()
+                    except Exception:
+                        pass
 
         if not files_dict:
             if self.ui:
@@ -530,16 +664,37 @@ class BuildOrchestrator:
                     filepath = issue.get("file", "")
                     if filepath in files_dict:
                         try:
-                            response = self.coder.fix_file(
-                                filepath, files_dict[filepath],
-                                issue.get("message", ""), spec, rules
+                            # Route fixes to the original agent that produced the file
+                            code_art = self.bus.latest(filepath)
+                            producer = code_art.producer_agent if code_art else "coder"
+                            fix_agent = self._get_classic_agent(producer)
+
+                            response = fix_agent.invoke(
+                                f"Fix this issue in {filepath}:\n"
+                                f"Issue: {issue.get('message', '')}\n\n"
+                                f"Current file contents:\n```\n{files_dict[filepath]}\n```\n\n"
+                                f"## Spec\n{spec}\n\n## Rules\n{rules}\n\n"
+                                f"Output the complete corrected file using:\n"
+                                f"```file:{filepath}\n<complete corrected file>\n```"
                             )
-                            fixed_files = self.coder.extract_files(response)
-                            written = self.coder.write_files(fixed_files)
+                            fixed_files = fix_agent.extract_files(response)
+                            written = fix_agent.write_files(fixed_files)
+
+                            # Update bus with fixed versions
+                            for fp, content in fixed_files:
+                                existing = self.bus.latest(fp)
+                                version = (existing.version + 1) if existing else 1
+                                self.bus.publish(CodeArtifact(
+                                    path=fp,
+                                    content=content,
+                                    producer_agent=producer,
+                                    version=version,
+                                ))
+
                             fixes_applied += len(written)
                             if not self.ui:
                                 for f in written:
-                                    print(f"      ~ {f} (fixed)")
+                                    print(f"      ~ {f} (fixed by {producer})")
                         except Exception as e:
                             if not self.ui:
                                 print(f"      Could not fix {filepath}: {e}")

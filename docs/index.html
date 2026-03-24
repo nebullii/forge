@@ -348,8 +348,8 @@
     <h1>Spec-driven code generation with <b>multi-agent orchestration</b></h1>
     <p class="hero-desc">
       Write a markdown spec. Run <code style="font-family:var(--mono);font-size:13px;color:var(--text);">forge build</code>.
-      A pipeline of specialized agents plans your project, writes every file,
-      audits for security, and validates the output.
+      Specialized agents collaborate through structured API contracts, run in
+      parallel, and self-correct when the reviewer finds issues.
     </p>
     <div class="hero-actions">
       <a class="btn btn-primary" href="#how-it-works">Get started</a>
@@ -395,26 +395,32 @@
       <div class="t-out">&nbsp;&nbsp;&nbsp; task_05 &nbsp;GitHub Actions + Dockerfile &nbsp;&nbsp;&nbsp; <span class="t-ag">→ ci</span></div>
       <br>
       <div class="t-ph">Phase 2: Building</div>
+      <div class="t-out">&nbsp; Parallel scheduler: 5 tasks across {coder, backend, ci, frontend}</div>
+      <br>
       <div class="t-out">&nbsp; [1/5] Set up project structure</div>
       <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-file">+ requirements.txt</span></div>
       <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-file">+ main.py</span></div>
-      <div class="t-out">&nbsp; [2/5] User authentication API</div>
-      <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-file">+ src/auth.py</span></div>
-      <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-file">+ src/routes/auth.py</span></div>
+      <div class="t-out">&nbsp; [2/5] User authentication API &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="t-ag">&#9474;</span></div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-file">+ src/auth.py</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="t-ag">&#9474;</span> <span class="t-out">[5/5] GitHub Actions</span></div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-file">+ src/routes/auth.py</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="t-ag">&#9474;</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-file">+ .github/workflows/ci.yml</span></div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-out">3 API contracts registered</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="t-ag">&#9474;</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-file">+ Dockerfile</span></div>
       <div class="t-out">&nbsp; [3/5] Dashboard + data endpoints</div>
       <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-file">+ src/routes/dashboard.py</span></div>
       <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-file">+ src/services/data.py</span></div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-out">2 API contracts registered</span></div>
       <div class="t-out">&nbsp; [4/5] React frontend with auth flow</div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-out">Contracts: GET /auth/me, POST /auth/login, GET /dashboard, ...</span></div>
       <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-file">+ frontend/src/pages/Login.jsx</span></div>
       <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-file">+ frontend/src/pages/Dashboard.jsx</span></div>
-      <div class="t-out">&nbsp; [5/5] GitHub Actions + Dockerfile</div>
-      <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-file">+ .github/workflows/ci.yml</span></div>
-      <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-file">+ Dockerfile</span></div>
       <br>
       <div class="t-ph">Phase 3: Review</div>
+      <div class="t-out">&nbsp; Contract validation: 1 issue</div>
+      <div class="t-out">&nbsp;&nbsp;&nbsp; POST /auth/login has no auth configured</div>
+      <div class="t-out">&nbsp; Reworking src/auth.py <span class="t-ag">→ backend</span></div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-file">~ src/auth.py (fixed by backend)</span></div>
       <div class="t-out">&nbsp; Review passed.</div>
       <br>
-      <div class="t-ok">Build complete. 11 files written.</div>
+      <div class="t-ok">Build complete. 11 files written. Contracts saved.</div>
     </div>
   </div>
 </div>
@@ -504,29 +510,33 @@ No notifications.
 
     <div>
       <p class="label">Agent pipeline</p>
-      <h2>Specialized agents, not a single prompt</h2>
-      <p class="desc">Each agent has a focused role. The Project Manager distributes work with targeted prompts before execution begins.</p>
+      <h2>Agents collaborate, not just execute</h2>
+      <p class="desc">Agents share structured API contracts and full code through a thread-safe artifact bus. The reviewer sends fixes back to the specialist that wrote the file.</p>
 
       <div class="pipe">
         <div class="pipe-row"><span class="pn">1</span><span class="pname">Planner</span><span class="pdesc">&ensp;spec → task list + tech decisions</span></div>
-        <div class="pipe-row"><span class="pn">2</span><span class="pname">Project Manager</span><span class="pdesc">&ensp;assigns agents, writes per-task prompts</span><span class="ptag">new</span></div>
+        <div class="pipe-row"><span class="pn">2</span><span class="pname">Project Manager</span><span class="pdesc">&ensp;assigns agents, writes per-task prompts</span></div>
         <div class="pipe-row">
           <span class="pn">3</span>
           <div>
             <span class="pname">Backend</span> <span class="pdesc">+</span> <span class="pname">CI</span> <span class="pdesc">+</span> <span class="pname">Deploy</span><span class="ptag">parallel</span>
             <div class="pbranch">
-              <div class="pipe-row"><span class="pname">Backend&ensp;</span><span class="pdesc">API routes, DB models, services</span></div>
+              <div class="pipe-row"><span class="pname">Backend&ensp;</span><span class="pdesc">API routes, DB models → publishes contracts</span></div>
               <div class="pipe-row"><span class="pname">CI&emsp;&emsp;&emsp;</span><span class="pdesc">GitHub Actions, Dockerfile</span></div>
               <div class="pipe-row"><span class="pname">Deploy&ensp;&ensp;</span><span class="pdesc">Railway / Render / Vercel configs</span></div>
             </div>
           </div>
         </div>
-        <div class="pipe-row"><span class="pn">4</span><span class="pname">Frontend</span><span class="pdesc">&ensp;React components, routing, API wiring</span></div>
-        <div class="pipe-row"><span class="pn">5</span><span class="pname">Security</span><span class="pdesc">&ensp;OWASP audit, secret detection, patching</span></div>
-        <div class="pipe-row"><span class="pn">6</span><span class="pname">Reviewer</span><span class="pdesc">&ensp;cross-file validation, auto-fix</span></div>
+        <div class="pipe-row"><span class="pn">4</span><span class="pname">Frontend</span><span class="pdesc">&ensp;reads contracts → generates matching UI</span></div>
+        <div class="pipe-row"><span class="pn">5</span><span class="pname">Security</span><span class="pdesc">&ensp;reads all code from bus, audits OWASP</span></div>
+        <div class="pipe-row"><span class="pn">6</span><span class="pname">Reviewer</span><span class="pdesc">&ensp;contract validation, cross-file review</span></div>
+        <div class="pipe-row"><span class="pn">7</span><span class="pname">Rework</span><span class="pdesc">&ensp;fixes route back to original agent</span><span class="ptag">new</span></div>
       </div>
 
       <div class="tip" style="margin-top:20px;">
+        <b>ArtifactBus + ContractRegistry</b> — agents publish typed artifacts (code, decisions, contracts) to a shared thread-safe store. The frontend gets exact endpoint shapes. Security reads real code, not filenames. Contracts persist across incremental builds.
+      </div>
+      <div class="tip" style="margin-top:10px;">
         <b>Agentic Firewall</b> — every write is validated before touching disk. Agents cannot write outside the project root, touch <code style="font-family:var(--mono);font-size:11px;">.env</code>, or embed <code style="font-family:var(--mono);font-size:11px;">eval()</code>. All decisions are logged.
       </div>
     </div>
@@ -547,15 +557,15 @@ No notifications.
           </tr>
           <tr>
             <td><span class="aname">backend</span></td>
-            <td>Generates FastAPI routes, SQLite models (raw SQL), Pydantic schemas, service layer, and environment configuration.</td>
+            <td>Generates FastAPI routes, SQLite models (raw SQL), Pydantic schemas, service layer. Publishes structured API contracts (endpoints, schemas, auth) to the ContractRegistry.</td>
           </tr>
           <tr>
             <td><span class="aname">frontend</span></td>
-            <td>Generates React + Vite pages, components, routing, and API client. Receives backend contract context from the Project Manager.</td>
+            <td>Reads structured contracts from the registry + backend code from the ArtifactBus. Generates React + Vite pages that match backend endpoints exactly.</td>
           </tr>
           <tr>
             <td><span class="aname">security</span></td>
-            <td>Audits all generated files against OWASP Top 10. Detects hardcoded secrets and injection flaws. Patches files in place.</td>
+            <td>Reads all code from the ArtifactBus (not just filenames). Audits against OWASP Top 10, checks auth coverage via contracts. Patches files in place.</td>
           </tr>
           <tr>
             <td><span class="aname">ci</span></td>
@@ -567,7 +577,7 @@ No notifications.
           </tr>
           <tr>
             <td><span class="aname">reviewer</span></td>
-            <td>Final cross-file pass. Checks imports, API contract alignment, error handling. Auto-applies fixes for errors.</td>
+            <td>Reads all code from the bus. Runs automated contract validation (frontend vs backend). Routes fixes back to the original specialist agent — not a generic coder. One retry per file.</td>
           </tr>
         </tbody>
       </table>
@@ -616,6 +626,27 @@ No notifications.
         <div class="step" style="padding:18px 0;">
           <div class="step-n" style="padding-top:2px; color:var(--dim);">—</div>
           <div>
+            <h3>Structured API contracts</h3>
+            <p>Backend publishes machine-readable endpoint schemas. Frontend consumes them. No more <code style="font-family:var(--mono);font-size:11px;">POST /api/users</code> vs <code style="font-family:var(--mono);font-size:11px;">POST /users</code> mismatches. Contracts persist to <code style="font-family:var(--mono);font-size:11px;background:var(--raised);border:1px solid var(--border);padding:1px 4px;border-radius:3px;">.forge/contracts.json</code> across builds.</p>
+          </div>
+        </div>
+        <div class="step" style="padding:18px 0;">
+          <div class="step-n" style="padding-top:2px; color:var(--dim);">—</div>
+          <div>
+            <h3>Parallel execution</h3>
+            <p>Independent agents (backend, CI, deploy) run concurrently via a dependency-aware scheduler. Both classic and ADK modes.</p>
+          </div>
+        </div>
+        <div class="step" style="padding:18px 0;">
+          <div class="step-n" style="padding-top:2px; color:var(--dim);">—</div>
+          <div>
+            <h3>Self-correcting review</h3>
+            <p>Reviewer finds a bug in your backend? The fix goes to the backend agent — not a generic coder. One retry per file, tracked for observability.</p>
+          </div>
+        </div>
+        <div class="step" style="padding:18px 0;">
+          <div class="step-n" style="padding-top:2px; color:var(--dim);">—</div>
+          <div>
             <h3>Any LLM provider</h3>
             <p>Anthropic, OpenAI, Together, Groq, or local Ollama. Set an env var, switch with <code style="font-family:var(--mono);font-size:11px;background:var(--raised);border:1px solid var(--border);padding:1px 4px;border-radius:3px;">--provider</code>.</p>
           </div>
@@ -623,15 +654,8 @@ No notifications.
         <div class="step" style="padding:18px 0;">
           <div class="step-n" style="padding-top:2px; color:var(--dim);">—</div>
           <div>
-            <h3>Resumable builds</h3>
-            <p>State is saved after every task to <code style="font-family:var(--mono);font-size:11px;background:var(--raised);border:1px solid var(--border);padding:1px 4px;border-radius:3px;">.forge/build-state.yaml</code>. Interrupt and re-run anytime.</p>
-          </div>
-        </div>
-        <div class="step" style="padding:18px 0;">
-          <div class="step-n" style="padding-top:2px; color:var(--dim);">—</div>
-          <div>
             <h3>Incremental features</h3>
-            <p>Add to an existing project without rebuilding from scratch.</p>
+            <p>Add to an existing project. Contracts from previous builds are loaded so new code knows what endpoints exist.</p>
             <div class="code" style="margin-top:10px; font-size:11.5px; padding:10px 12px;">
 <span class="ps">$</span> forge build --feature "add JWT refresh tokens"
             </div>
@@ -640,8 +664,8 @@ No notifications.
         <div class="step" style="padding:18px 0; border-bottom:none;">
           <div class="step-n" style="padding-top:2px; color:var(--dim);">—</div>
           <div>
-            <h3>Distributed agent servers</h3>
-            <p><code style="font-family:var(--mono);font-size:11px;background:var(--raised);border:1px solid var(--border);padding:1px 4px;border-radius:3px;">forge agents start</code> exposes each agent as an HTTP A2A server on ports 8101–8108.</p>
+            <h3>Resumable + distributed</h3>
+            <p>State saved after every task. <code style="font-family:var(--mono);font-size:11px;background:var(--raised);border:1px solid var(--border);padding:1px 4px;border-radius:3px;">forge agents start</code> exposes each agent as an HTTP A2A server on ports 8101–8108.</p>
           </div>
         </div>
       </div>

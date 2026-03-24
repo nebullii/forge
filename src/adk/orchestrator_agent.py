@@ -37,7 +37,7 @@ import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from .tools import BuildArtifacts, make_agent_tools
+from .tools import BuildContext, make_agent_tools
 
 if TYPE_CHECKING:
     from ..providers.base import BaseProvider
@@ -58,7 +58,9 @@ You have these tools available:
 - call_security_agent     — Audit all generated code. Needs backend + frontend done.
 - call_ci_agent           — Generate CI/CD config (GitHub Actions, Docker).
 - call_deploy_agent       — Generate deployment config (Railway/Render/Vercel).
-- call_reviewer_agent     — Final review of all code. Call LAST.
+- call_reviewer_agent     — Final review of all code. Call before rework.
+- rework_file             — Send a file back to its original agent to fix a reviewer issue.
+                            One attempt per file. Use AFTER call_reviewer_agent.
 
 Execution order — follow this exactly:
 1. call_planner(spec, rules)
@@ -79,7 +81,12 @@ Execution order — follow this exactly:
    — Must come after backend + frontend are both done.
 
 6. call_reviewer_agent(spec, rules)
-   — Always last. Reviews everything generated.
+   — Reviews everything generated.
+
+7. If the reviewer found error-severity issues, use rework_file for EACH error:
+   — rework_file(agent_name, filepath, issue, spec, rules)
+   — Only call rework_file ONCE per file. Do not retry.
+   — Then summarize results.
 
 RULES:
 - Always call every agent. Never skip any step.
@@ -132,7 +139,7 @@ class ForgeADKOrchestrator:
             else:
                 self._clients[name] = A2AClient.for_agent(agent)
 
-    def _build_adk_agent(self, artifacts: BuildArtifacts, deploy_md: str):
+    def _build_adk_agent(self, context: BuildContext, deploy_md: str):
         """Create the ADK LlmAgent with all agent tools wired in."""
         try:
             from google.adk.agents import LlmAgent
@@ -145,7 +152,7 @@ class ForgeADKOrchestrator:
         from .llm_bridge import create_forge_llm
 
         llm = create_forge_llm(self.provider)
-        tools = make_agent_tools(self._clients, artifacts, deploy_md)
+        tools = make_agent_tools(self._clients, context, deploy_md)
 
         return LlmAgent(
             name="forge-orchestrator",
@@ -182,11 +189,17 @@ class ForgeADKOrchestrator:
         if deploy_path.exists():
             deploy_md = deploy_path.read_text()
 
-        # Shared state that tools write into
-        artifacts = BuildArtifacts()
+        # Shared state that tools write into — backed by ArtifactBus + ContractRegistry
+        context = BuildContext()
 
-        # Build the ADK agent with tools bound to this run's artifacts
-        adk_agent = self._build_adk_agent(artifacts, deploy_md)
+        # Load existing contracts for incremental builds
+        from ..collaboration.contracts import ContractRegistry
+        contracts_path = self.forge_path / "contracts.json"
+        if contracts_path.exists():
+            context.registry = ContractRegistry.load(contracts_path)
+
+        # Build the ADK agent with tools bound to this run's context
+        adk_agent = self._build_adk_agent(context, deploy_md)
 
         # Set up runner + session
         session_service = InMemorySessionService()
@@ -246,16 +259,25 @@ class ForgeADKOrchestrator:
         except PipelineAbortError as exc:
             if verbose:
                 print(f"\n  [ADK] Pipeline aborted: {exc}")
-            artifacts.errors.append(f"Pipeline aborted: {exc}")
+            from ..collaboration import BuildLogArtifact
+            context.bus.publish(BuildLogArtifact(
+                message=f"Pipeline aborted: {exc}",
+                producer_agent="orchestrator",
+                level="error",
+            ))
 
         if verbose and final_text:
             print(f"\n  [ADK] {final_text.strip()}")
 
+        # Persist contracts for incremental builds
+        context.registry.save(self.forge_path / "contracts.json")
+
         return {
-            "decisions": artifacts.decisions,
-            "tasks": artifacts.tasks,
-            "files_written": artifacts.files,
-            "errors": artifacts.errors,
-            "review": artifacts.review,
-            "aborted": artifacts.aborted,
+            "decisions": context.decisions,
+            "tasks": context.tasks,
+            "files_written": context.bus.export_files_list(),
+            "errors": context.bus.get_errors(),
+            "review": context.bus.get_review(),
+            "aborted": context.aborted,
+            "contracts": context.registry.format_as_json(),
         }

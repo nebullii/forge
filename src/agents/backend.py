@@ -37,6 +37,24 @@ Output every file using this exact format:
 ```
 
 Write COMPLETE files. Include all imports and error handling.
+
+IMPORTANT — After all files, output a machine-readable contract block listing
+every API endpoint and data model you created. Use this EXACT format:
+
+```contracts
+{
+  "api": [
+    {"method": "GET", "path": "/users", "response_schema": {"type": "array", "items": "User"}, "auth": "none"},
+    {"method": "POST", "path": "/users", "request_schema": {"email": "str", "name": "str"}, "response_schema": {"id": "int"}, "auth": "none"}
+  ],
+  "models": [
+    {"name": "User", "fields": {"id": "integer", "email": "text", "name": "text"}}
+  ]
+}
+```
+
+This contract block is consumed by the frontend and security agents to ensure
+API compatibility. List EVERY endpoint and model — do not skip any.
 """
 
 
@@ -105,7 +123,13 @@ Use this format for each file:
 <complete file contents>
 ```
 
-Write COMPLETE files. Include all imports and error handling."""
+Write COMPLETE files. Include all imports and error handling.
+
+After all files, output a contract block listing every endpoint and model:
+
+```contracts
+{{"api": [{{"method": "GET", "path": "/example", "response_schema": {{}}, "auth": "none"}}], "models": [{{"name": "Example", "fields": {{"id": "integer"}}}}]}}
+```"""
 
         return self.invoke(prompt)
 

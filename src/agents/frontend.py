@@ -123,6 +123,8 @@ Write COMPLETE files. Match the backend API contracts exactly."""
         rules = context.get("rules", "")
         decisions = context.get("decisions", {})
         backend_files = context.get("backend_files", [])
+        contracts = context.get("contracts", "")
+        backend_code = context.get("backend_code", {})
 
         if isinstance(decisions, dict):
             import json
@@ -134,7 +136,19 @@ Write COMPLETE files. Match the backend API contracts exactly."""
         task_text = "\n".join(prompt_parts)
 
         if spec:
-            response = self.generate_frontend(spec, rules, decisions_str, backend_files)
+            # Build enriched context with contracts and backend code
+            extra_context = ""
+            if contracts:
+                extra_context += f"\n\n## Backend API Contracts (match these exactly)\n{contracts}"
+            if backend_code and isinstance(backend_code, dict):
+                extra_context += "\n\n## Backend Code Reference"
+                for fp, content in backend_code.items():
+                    extra_context += f"\n### {fp}\n```\n{content}\n```"
+
+            response = self.generate_frontend(
+                spec, rules, decisions_str, backend_files,
+                project_context=extra_context,
+            )
         else:
             response = self.invoke(task_text)
 

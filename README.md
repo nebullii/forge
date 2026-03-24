@@ -14,6 +14,87 @@ forge build
 
 ---
 
+## The Problem
+
+Going from idea to working code is slow. You spend hours on boilerplate, wiring up
+APIs, configuring CI/CD, and fixing the mismatches between frontend and backend that
+inevitably happen when one person (or one LLM prompt) tries to hold the full picture.
+
+Copy-pasting ChatGPT output into files is tedious and error-prone. Existing code
+generators produce scaffolds, not working applications. And single-agent LLM tools
+hit context limits, hallucinate API contracts, and can't self-correct.
+
+## What Forge Does Differently
+
+**Multiple specialist agents that actually collaborate.** A planner picks the right
+stack. A project manager writes focused instructions for each agent. Backend, frontend,
+CI/CD, and deploy agents run in parallel. A security agent audits the output. A
+reviewer catches bugs and sends fixes back to the agent that wrote the code — not a
+generic fixer.
+
+**Structured contracts, not prose.** The backend agent outputs machine-readable API
+contracts (endpoints, request/response schemas, auth requirements). The frontend agent
+receives these contracts and generates code that matches exactly. No more `POST /api/users`
+vs `POST /users` mismatches.
+
+**Real impact:**
+- A markdown spec becomes a working project in one command — API routes, DB models,
+  React frontend, CI/CD pipeline, deployment config, security audit, and code review
+- Frontend/backend API contracts are validated automatically before the reviewer runs
+- Independent agents (backend, CI, deploy) run in parallel, cutting build time
+- Incremental builds (`--feature "add dark mode"`) know what endpoints already exist
+- Every file write goes through a security firewall — no `eval()`, no path traversal,
+  no hardcoded secrets
+
+## System Design at a Glance
+
+```
+                     .forge/spec.md
+                           |
+                     +-----------+
+                     |  Planner  |  Picks stack: Rails / FastAPI / Go / Phoenix / ...
+                     +-----+-----+
+                           |
+                   +-------+--------+
+                   | Project Manager|  Assigns tasks to specialist agents
+                   +-------+--------+
+                           |
+          +----------------+----------------+
+          |                |                |         (parallel)
+    +-----------+   +-----------+   +-----------+
+    |  Backend  |   |    CI     |   |  Deploy   |
+    | API routes|   | Actions,  |   | Railway / |
+    | DB models |   | Dockerfile|   | Vercel    |
+    +-----------+   +-----------+   +-----------+
+          |
+          | API contracts (structured JSON)
+          v
+    +-----------+
+    | Frontend  |   Reads contracts, generates matching UI
+    +-----------+
+          |
+    +-----------+
+    | Security  |   OWASP audit on all code from ArtifactBus
+    +-----------+
+          |
+    +-----------+
+    | Reviewer  |   Validates, then routes fixes to original agent
+    +-----------+
+```
+
+**Key infrastructure:**
+
+| Layer | What it does |
+|-------|-------------|
+| **ArtifactBus** | Thread-safe shared store. Agents publish typed artifacts (code, decisions, reviews). Consumers query by path, agent, or type. Source of truth during the build. |
+| **ContractRegistry** | Structured API/model/event contracts extracted from backend output. Frontend gets exact endpoint shapes. Security gets auth coverage checks. Persisted to `.forge/contracts.json` for incremental builds. |
+| **Parallel Scheduler** | Computes dependency graph from agent assignments. Runs independent tasks concurrently (ThreadPoolExecutor). Same-agent tasks stay sequential. |
+| **A2A Protocol** | Google's Agent-to-Agent spec. In-process by default (no HTTP). Run `forge agents start` to expose each as a standalone HTTP server. |
+| **Agentic Firewall** | Every file write checked against path allowlist, blocklist, and content patterns. Audit log at `.forge/firewall_audit.log`. |
+| **Providers** | Anthropic (default), OpenAI, Together, Groq, Ollama. Swap with `--provider` flag. |
+
+---
+
 ## Contents
 
 - [How It Works](#how-it-works)
@@ -156,7 +237,9 @@ forge dev
 
 ### Classic Mode Pipeline
 
-Sequential three-phase pipeline. Fast, simple, works with any provider.
+Dependency-aware parallel pipeline. Tasks assigned to independent agents run
+concurrently; same-agent tasks run sequentially. Falls back to fully sequential
+when all tasks target the same agent.
 
 ```
 .forge/spec.md
@@ -173,23 +256,28 @@ Sequential three-phase pipeline. Fast, simple, works with any provider.
 └────────┬────────────┘
          │  tasks[].agent + tasks[].prompt
          ▼
-┌──────────────────────────────────────────┐
-│  Task Executor                           │
-│                                          │
-│  for each task:                          │
-│    agent = route(task.agent)             │
-│    response = agent.invoke(task.prompt)  │
-│    files = extract_files(response)       │
-│    for each file:                        │
-│      if firewall.allow(path, content):   │
-│        write to disk                     │
-│    save state                            │
-└────────┬─────────────────────────────────┘
+┌──────────────────────────────────────────────────┐
+│  Parallel Scheduler (src/scheduler.py)           │
+│                                                  │
+│  Builds dependency graph from agent assignments: │
+│    coder → {backend, ci, deploy} → frontend → …  │
+│                                                  │
+│  Independent tasks run in ThreadPoolExecutor:    │
+│    agent = route(task.agent)                     │
+│    response = agent.invoke(task.prompt)          │
+│    files → firewall → disk + ArtifactBus        │
+│    backend response → ContractRegistry           │
+│    frontend gets contracts + backend code         │
+└────────┬─────────────────────────────────────────┘
          │
          ▼
-┌─────────────────┐
-│  ReviewerAgent  │  Validates all files, auto-fixes errors
-└─────────────────┘
+┌────────────────────────────────────────┐
+│  ReviewerAgent                        │
+│    Reads all code from ArtifactBus    │
+│    Contract validation (auto)         │
+│    Error → rework by original agent   │
+│    (one retry per file, then done)    │
+└────────────────────────────────────────┘
 ```
 
 ### ADK Mode Pipeline
@@ -245,13 +333,28 @@ Independent agents run in parallel via a thread pool.
            ▼
     ┌───────────────┐
     │ ReviewerAgent │  Cross-file correctness, contract validation
-    └───────────────┘
+    └──────┬────────┘
+           │
+           │  Step 7 [conditional — rework errors]
+           ▼
+    rework_file(agent, path, issue, ...)
+           │  Sends each error back to its original agent
+           │  One retry per file, then done
+           └────────────────────────────────────────────
 ```
+
+**How agents share data (ArtifactBus + ContractRegistry):**
+- Backend publishes `CodeArtifact` + structured `ApiEndpointContract` / `DataModelContract`
+- Frontend receives the full contracts and relevant backend code (not just filenames)
+- Security and Reviewer read all code content from the bus
+- After backend, contract validation runs automatically: "does the frontend call
+  endpoints that exist?" — mismatches are flagged to the reviewer
 
 **Why this ordering is parallel-safe:**
 Backend, CI, and Deploy all depend only on the planner's decisions. They don't read
 each other's output, so they can safely run concurrently. Frontend needs the backend's
 API contracts. Security audits the application code. Reviewer sees everything last.
+All shared state goes through the thread-safe ArtifactBus (RLock-protected).
 
 ### A2A Protocol
 
@@ -279,15 +382,109 @@ By default, all agents run in-process — no network overhead, no server managem
 Run `forge agents start` to expose each agent as a real HTTP server on its own port
 (useful for distributed builds or debugging individual agents).
 
+### Collaboration Layer
+
+Agents don't just run in sequence — they share structured data through a
+collaboration layer that ensures frontend/backend contract alignment, thread-safe
+parallel execution, and targeted feedback when the reviewer finds issues.
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│                        ArtifactBus (thread-safe)                        │
+│                                                                         │
+│  CodeArtifact ──────── DecisionArtifact ──────── ReviewArtifact         │
+│  (path, content,       (key, value,              (passed, issues,       │
+│   producer, version)    producer, reasoning)       target_path)          │
+│                                                                         │
+│  ContractArtifact ──── BuildLogArtifact ──────── ReworkRequestArtifact  │
+│  (type, data,          (message, level,           (target_path,          │
+│   producer)             producer)                  original_agent, issue) │
+└────────────────────────────────┬─────────────────────────────────────────┘
+                                 │ publish() / query()
+     ┌───────────────────────────┼───────────────────────────┐
+     │                           │                           │
+     ▼                           ▼                           ▼
+ Planner                    Backend                    Frontend
+ publishes                  publishes                  reads contracts +
+ DecisionArtifacts          CodeArtifacts +            backend code from bus,
+                            contracts to registry      generates matching UI
+```
+
+**ArtifactBus** (`src/collaboration/artifact_bus.py`) — Thread-safe store for all
+generated content. Backed by `threading.RLock`. Agents publish artifacts; consumers
+query by path, task, agent, or type. The bus is the source of truth — not files on disk
+or tuple lists.
+
+**ContractRegistry** (`src/collaboration/contracts.py`) — Structured API/model/event
+contracts extracted from backend output. The frontend agent gets exact endpoint shapes
+(method, path, request/response schema, auth). The security agent gets pre-validated
+auth coverage. The reviewer gets automated frontend-vs-backend mismatch detection.
+
+Contract extraction works two ways:
+1. **Explicit** — the backend agent outputs a `contracts` JSON block (preferred)
+2. **Fallback** — regex extraction from FastAPI/Flask/Express/Rails route decorators
+
+Contracts persist to `.forge/contracts.json` after each build, so incremental builds
+(`forge build --feature "..."`) know what endpoints already exist.
+
+### Feedback Loop
+
+When the reviewer or security agent finds issues, fixes route back to the **original
+specialist** — not a generic coder:
+
+```
+ReviewerAgent
+    │  "app/routes/users.py has SQL injection"
+    │
+    ▼  lookup: who wrote this file?
+ArtifactBus.latest("app/routes/users.py")
+    │  → producer_agent = "backend"
+    │
+    ▼  route fix to backend specialist
+BackendAgent.invoke("Fix this SQL injection in ...")
+    │
+    ▼  publish fixed version (version + 1)
+ArtifactBus.publish(CodeArtifact(version=2, ...))
+```
+
+Capped at one retry per file to prevent infinite loops. Tracked via
+`ReworkRequestArtifact` for observability.
+
+### Parallel Task Scheduling
+
+Classic mode now runs independent tasks concurrently when the plan spans multiple
+agent types. The scheduler computes a dependency graph from agent assignments:
+
+```
+Task dependencies (computed automatically):
+─────────────────────────────────────────
+  coder tasks    → no dependencies (run first)
+  backend tasks  → wait for coder
+  ci tasks       → wait for coder         ┐
+  deploy tasks   → wait for coder         ├── run in parallel
+  backend tasks  → (also parallel w/ ci)  ┘
+  frontend tasks → wait for backend
+  security tasks → wait for backend + frontend
+```
+
+Same-agent tasks run sequentially (in plan order). Cross-agent tasks respect the
+dependency rules above. Falls back to sequential when all tasks use the same agent.
+
 ### Layer Map
 
 ```
 src/
   cli.py                    — Entry point. All forge commands.
-  orchestrator.py           — Build pipeline coordination.
+  orchestrator.py           — Build pipeline: both modes, parallel scheduler.
+  scheduler.py              — Dependency-aware parallel task scheduler.
   config.py                 — Provider config (~/.forge/config.yaml).
   state.py                  — Resumable build state (schema-versioned YAML).
   context.py                — Token-budgeted project context assembly.
+
+  collaboration/
+    models.py               — Typed artifact models (CodeArtifact, ReviewArtifact, ...).
+    artifact_bus.py         — Thread-safe shared artifact store (RLock-backed).
+    contracts.py            — ContractRegistry + extraction + persistence.
 
   providers/
     base.py                 — BaseProvider ABC + exponential backoff retry.
@@ -301,8 +498,8 @@ src/
     project_manager.py      — Plan → per-task agent assignments and prompts.
     coder.py                — General-purpose file generation (classic mode fallback).
     reviewer.py             — Code validation, severity classification, auto-fix.
-    backend.py              — API routes, DB models, service layer.
-    frontend.py             — React/Svelte/Vue components, routing, API integration.
+    backend.py              — API routes, DB models, service layer + contract output.
+    frontend.py             — React/Svelte/Vue components, contract-aware API integration.
     security_agent.py       — OWASP Top 10 audit, secret detection, patch generation.
     ci_cd.py                — GitHub Actions, Dockerfile, docker-compose.
     deploy.py               — Railway / Render / Vercel / Fly.io configs.
@@ -316,7 +513,7 @@ src/
     llm_bridge.py           — Wraps BaseProvider as Google ADK BaseLlm.
     agent_runner.py         — ADKAgentRunner: bridges LlmAgent ↔ A2A protocol.
     orchestrator_agent.py   — Root ADK LlmAgent + tool routing.
-    tools.py                — Tool functions + BuildArtifacts shared state.
+    tools.py                — Tool functions + BuildContext (bus + registry + state).
 
   security/
     firewall.py             — AgenticFirewall: policy enforcement + audit log.
@@ -332,11 +529,12 @@ src/
 forge build
 ```
 
-Three-phase pipeline. Suitable for most projects. Works with any LLM provider including
-local Ollama models. Generates one agent's output at a time, sequentially.
+Three-phase pipeline with dependency-aware parallel execution. Works with any LLM
+provider including local Ollama models. Independent tasks (e.g., backend + CI + deploy)
+run concurrently when the plan spans multiple agent types.
 
 **When to use:** Standard projects, limited API budget, local models, or when you want
-predictable sequential output.
+the simplest setup with no extra dependencies.
 
 ### ADK Mode
 
@@ -463,13 +661,15 @@ Generates deployment configuration.
 
 ### ReviewerAgent
 
-Final validation pass over all generated files.
+Final validation pass over all generated files. Reads code from the ArtifactBus
+(not disk) so it sees the exact content every agent produced.
 
 - Broken imports and missing dependencies
-- API contract mismatches between frontend and backend
+- API contract mismatches between frontend and backend (auto-detected via ContractRegistry)
 - Incomplete implementations (placeholders, missing error handling)
 - Severity classification: `error` (auto-fix attempted) vs `warning`
-- Auto-fix: passes each error back to the appropriate agent with context
+- **Targeted rework:** errors route back to the specialist that wrote the file
+  (backend bug → backend agent, not a generic coder). One retry per file.
 
 ---
 
@@ -661,6 +861,7 @@ my-project/
     firewall_policy.json — AgenticFirewall rules (editable)
     build-state.yaml     — Persisted build state (auto-generated, do not edit)
     decisions.md         — Tech stack decisions from PlannerAgent
+    contracts.json       — Persisted API/model contracts (for incremental builds)
     review.yaml          — ReviewerAgent output
     firewall_audit.log   — All file write decisions with timestamps
     agent_pids.yaml      — Running agent PIDs when using distributed mode
@@ -715,16 +916,20 @@ pytest
 
 - `src/providers/` — add a new LLM provider by subclassing `BaseProvider`
 - `src/agents/` — add a new specialized agent by subclassing `BaseAgent`
+- `src/collaboration/` — artifact bus, contract registry, typed models
+- `src/scheduler.py` — dependency graph and parallel task execution
 - `templates/` — add a new project template with a `.forge/` directory
 - `src/adk/tools.py` — add a new orchestrator tool for ADK mode
 
 ### Design principles
 
 - **Provider agnostic** — swap Anthropic, OpenAI, or local Ollama with a flag
-- **Two modes** — classic (simple, sequential) or ADK (parallel, specialized)
+- **Two modes** — classic (parallel, dependency-aware) or ADK (LLM-orchestrated, 7 agents)
+- **Agents collaborate** — shared artifact bus + structured contracts, not just file lists
 - **A2A compatible** — every agent is a standalone A2A service
 - **Resumable** — build state persisted after every task, resume on interrupt
 - **Zero-trust writes** — Agentic Firewall validates every file before disk
+- **Thread-safe** — all shared state behind `RLock`; safe for parallel execution
 - **Minimal core** — classic mode requires only `pyyaml`; all extras are opt-in
 
 ---

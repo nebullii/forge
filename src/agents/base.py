@@ -198,12 +198,22 @@ class BaseAgent:
             )
 
     def _format_context(self, context: dict) -> str:
-        """Format a context dict into a prompt section."""
+        """Format a context dict into a prompt section.
+
+        When *files* is a dict of ``{path: content}``, the full content is
+        included so that downstream agents (security, reviewer) can inspect
+        actual code — not just filenames.
+        """
         parts = []
         for key, value in context.items():
             if key == "files" and isinstance(value, dict):
-                # Skip large file dumps unless specifically needed
-                parts.append(f"## Existing Files\n{', '.join(value.keys())}")
+                parts.append("## Existing Files")
+                for fp, content in value.items():
+                    parts.append(f"### {fp}\n```\n{content}\n```")
+            elif key == "backend_code" and isinstance(value, dict):
+                parts.append("## Backend Code Reference")
+                for fp, content in value.items():
+                    parts.append(f"### {fp}\n```\n{content}\n```")
             elif isinstance(value, str) and value:
                 label = key.replace("_", " ").title()
                 parts.append(f"## {label}\n{value}")
