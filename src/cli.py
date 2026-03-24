@@ -92,7 +92,7 @@ def _interactive_new(default_name=None):
                 print("\nCancelled.")
                 sys.exit(0)
 
-    # ── Step 3: Spec builder ───────────────────────────────
+    # ── Step 3: Describe your idea ──────────────────────────
     print()
     print(divider)
     if template:
@@ -100,68 +100,132 @@ def _interactive_new(default_name=None):
         print(f"  Building with: {stack}")
     print(divider)
     print()
-    print("Let's fill in your project spec.\n")
 
     try:
-        what = input("Describe your project in one or two sentences:\n> ").strip()
+        print("Describe your idea in a few sentences.")
+        print("What does the app do? Who is it for? What are the key features?\n")
+        idea = input("> ").strip()
+        if not idea:
+            print("No description provided. You can edit .forge/spec.md later.")
+            return template, project_name, None
         print()
-
-        users = input("Who will use it?\n> ").strip()
-        print()
-
-        print("Key features (one per line, empty line when done):")
-        features = []
-        while True:
-            line = input("  - ").strip()
-            if not line:
-                break
-            features.append(line)
-        print()
-
-        vibe = input("Vibe / tone (e.g. minimal, fun, professional) [optional]:\n> ").strip()
-        print()
-
     except KeyboardInterrupt:
         print("\nCancelled.")
         sys.exit(0)
 
-    # ── Step 4: Summary + confirm ──────────────────────────
-    print(divider)
-    print("  Summary")
-    print(divider)
-    print(f"  Name     : {project_name}")
-    if template:
-        print(f"  Template : {template}  ({TEMPLATE_STACKS.get(template, '')})")
-    if what:
-        print(f"  What     : {what}")
-    if users:
-        print(f"  Users    : {users}")
-    if features:
-        print(f"  Features :")
-        for f in features:
-            print(f"               - {f}")
-    if vibe:
-        print(f"  Vibe     : {vibe}")
-    print(divider)
-    print()
+    # ── Step 4: AI generates structured spec ──────────────
+    spec_md = _ai_generate_spec(project_name, idea, template)
 
-    try:
-        confirm = input("Create project? [Y/n]: ").strip().lower()
-        if confirm in ("n", "no"):
-            print("Cancelled.")
+    if spec_md:
+        print(divider)
+        print("  Here's what I understood:")
+        print(divider)
+        print()
+        print(spec_md)
+        print()
+        print(divider)
+        print()
+
+        try:
+            confirm = input("Looks good? [Y/n/edit]: ").strip().lower()
+            if confirm in ("n", "no"):
+                print("Cancelled.")
+                sys.exit(0)
+            if confirm in ("e", "edit"):
+                print("\nYou can refine the spec after the project is created.")
+                print("Run: nano .forge/spec.md\n")
+        except KeyboardInterrupt:
+            print("\nCancelled.")
             sys.exit(0)
-    except KeyboardInterrupt:
-        print("\nCancelled.")
-        sys.exit(0)
 
-    spec_answers = {
-        "what": what,
-        "users": users,
-        "features": features,
-        "vibe": vibe,
-    }
+        return template, project_name, {"_raw_spec": spec_md}
+    else:
+        # AI not available — fall back to manual input
+        print("  (AI spec generation not available — no API key configured)")
+        print("  You can edit .forge/spec.md after creation.\n")
 
-    return template, project_name, spec_answers
+        try:
+            confirm = input("Create project with default spec? [Y/n]: ").strip().lower()
+            if confirm in ("n", "no"):
+                print("Cancelled.")
+                sys.exit(0)
+        except KeyboardInterrupt:
+            print("\nCancelled.")
+            sys.exit(0)
+
+        return template, project_name, None
+
+
+def _ai_generate_spec(project_name: str, idea: str, template: str = None) -> str:
+    """Use the LLM to turn a freeform idea into a structured spec.md.
+
+    Returns the spec markdown string, or empty string if no provider is available.
+    """
+    try:
+        from .config import load_config, get_provider_config
+        from .providers import create_provider
+
+        config = load_config()
+        if not config:
+            return ""
+        provider_config = get_provider_config(config)
+        provider = create_provider(provider_config)
+    except (ValueError, ImportError, Exception):
+        return ""
+
+    stack_hint = ""
+    if template:
+        stack = TEMPLATE_STACKS.get(template, "")
+        if stack:
+            stack_hint = f"\nPreferred stack: {stack}"
+
+    prompt = f"""\
+Turn this project idea into a structured project specification.
+Output ONLY the markdown — no explanation, no fences.
+
+Project name: {project_name}{stack_hint}
+
+User's idea:
+{idea}
+
+Use this exact format:
+
+# Project: {project_name}
+
+## What
+[1-2 sentence description of what the app does]
+
+## Users
+[Who will use this — one line]
+
+## Features
+- [Feature 1]
+- [Feature 2]
+- [Feature 3]
+(list 4-8 concrete features based on the idea)
+
+## Non-goals
+- [Thing this app does NOT do]
+(list 2-3 non-goals to keep scope focused)
+
+## Stack
+[Technology choices, or "Let Forge decide" if no preference]
+"""
+
+    try:
+        messages = [{"role": "user", "content": prompt}]
+        response = provider.chat(messages)
+        # Strip markdown fences if present
+        text = response.strip()
+        if text.startswith("```"):
+            lines = text.split("\n")
+            if lines[-1].strip() == "```":
+                text = "\n".join(lines[1:-1])
+            else:
+                text = "\n".join(lines[1:])
+        return text.strip()
+    except Exception:
+        return ""
 
 
 def cmd_new(args):
@@ -235,7 +299,13 @@ def cmd_new(args):
 
 
 def _write_spec(forge_path: Path, project_name: str, answers: dict, template: str = None):
-    """Write spec.md from interactive answers."""
+    """Write spec.md from interactive answers or AI-generated spec."""
+    # AI-generated raw spec — write directly
+    if "_raw_spec" in answers:
+        (forge_path / "spec.md").write_text(answers["_raw_spec"] + "\n")
+        return
+
+    # Legacy manual answers format
     lines = [f"# Project: {project_name}", ""]
 
     if template:
