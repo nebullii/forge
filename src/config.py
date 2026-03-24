@@ -76,17 +76,49 @@ def get_provider_config(config: dict, provider_name: Optional[str] = None):
                 return ProviderConfig(**{k: v for k, v in p.items() if v})
         raise ValueError(f"Provider '{provider_name}' not found in config.")
 
-    # Use first provider with valid credentials
+    # Find all providers with valid credentials
+    valid = []
     for p in providers:
         api_key = p.get("api_key")
         base_url = p.get("base_url")
         if (api_key and api_key.strip()) or base_url:
-            return ProviderConfig(**{k: v for k, v in p.items() if v})
+            valid.append(p)
 
-    raise ValueError(
-        "No provider has valid credentials.\n"
-        "Set ANTHROPIC_API_KEY or OPENAI_API_KEY, or edit ~/.forge/config.yaml"
-    )
+    if not valid:
+        raise ValueError(
+            "No provider has valid credentials.\n"
+            "Set ANTHROPIC_API_KEY or OPENAI_API_KEY, or edit ~/.forge/config.yaml"
+        )
+
+    # One valid provider — use it automatically
+    if len(valid) == 1:
+        return ProviderConfig(**{k: v for k, v in valid[0].items() if v})
+
+    # Multiple valid providers — ask the user to pick
+    print("Multiple AI providers found:\n")
+    for i, p in enumerate(valid, 1):
+        name = p.get("name", "unknown")
+        model = p.get("model", "")
+        print(f"  {i}. {name}  ({model})")
+    print()
+
+    try:
+        while True:
+            choice = input(f"Which provider? (1-{len(valid)}): ").strip()
+            try:
+                idx = int(choice) - 1
+                if 0 <= idx < len(valid):
+                    break
+                print(f"  Enter a number between 1 and {len(valid)}")
+            except ValueError:
+                print("  Enter a number")
+    except KeyboardInterrupt:
+        print("\nCancelled.")
+        import sys
+        sys.exit(0)
+
+    chosen = valid[idx]
+    return ProviderConfig(**{k: v for k, v in chosen.items() if v})
 
 
 def _expand_env_vars(obj):
