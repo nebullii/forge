@@ -416,6 +416,70 @@ def cmd_init(args):
     print("Next: nano .forge/spec.md    # edit your project spec")
 
 
+def cmd_fix(args):
+    """Fix errors — user pastes an error, debug agent fixes the code."""
+    from .config import load_config, get_provider_config
+    from .providers import create_provider
+    from .agents.debug import DebugAgent
+
+    project_root = Path.cwd()
+
+    # Get the error text
+    error_text = getattr(args, 'error', None) or ""
+    if not error_text:
+        print("Paste the error/traceback below (empty line to finish):\n")
+        lines = []
+        try:
+            while True:
+                line = input()
+                if not line and lines:
+                    break
+                lines.append(line)
+        except (KeyboardInterrupt, EOFError):
+            pass
+        error_text = "\n".join(lines)
+
+    if not error_text.strip():
+        print("No error provided.")
+        return
+
+    # Load provider
+    try:
+        config = load_config()
+        provider_config = get_provider_config(config)
+        provider = create_provider(provider_config)
+    except (ValueError, Exception) as e:
+        print(f"Error: {e}")
+        print("Run 'forge setup' to configure an API key.")
+        return
+
+    print(f"\nDebug agent analyzing error... ({provider_config})\n")
+
+    agent = DebugAgent(provider, project_root)
+    try:
+        fixes = agent.diagnose_and_fix(error_text, project_root)
+    except Exception as e:
+        print(f"Debug agent failed: {e}")
+        return
+
+    if not fixes:
+        print("Debug agent couldn't produce a fix.")
+        return
+
+    for filepath, content in fixes:
+        full_path = (project_root / filepath).resolve()
+        try:
+            full_path.relative_to(project_root.resolve())
+        except ValueError:
+            print(f"  Skipping {filepath} (outside project root)")
+            continue
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_text(content)
+        print(f"  Fixed: {filepath}")
+
+    print(f"\n{len(fixes)} file(s) fixed. Restart your server to test.")
+
+
 def cmd_dev(args):
     """Run local development server with auto-fix on crash."""
     from .dev_server import DevServer
@@ -782,6 +846,11 @@ def main():
     dev_parser.add_argument("--port", type=int, default=8080, help="Port number")
     dev_parser.add_argument("--no-fix", action="store_true", help="Disable auto-fix on crash")
     dev_parser.set_defaults(func=cmd_dev)
+
+    # forge fix
+    fix_parser = subparsers.add_parser("fix", help="Fix errors — paste an error message and the debug agent fixes it")
+    fix_parser.add_argument("error", nargs="?", help="Error message (or omit to paste interactively)")
+    fix_parser.set_defaults(func=cmd_fix)
 
     # forge sprint
     sprint_parser = subparsers.add_parser("sprint", help="Sprint timer")
