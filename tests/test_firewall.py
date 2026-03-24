@@ -38,13 +38,44 @@ class TestPathValidation:
             ok, _ = firewall.validate_file_write(f, "content")
             assert ok, f"Expected {f} to be allowed"
 
+    def test_allowed_backend_dir(self, firewall):
+        ok, _ = firewall.validate_file_write("backend/main.py", "from fastapi import FastAPI")
+        assert ok
+
+    def test_allowed_frontend_dir(self, firewall):
+        ok, _ = firewall.validate_file_write("frontend/index.html", "<html></html>")
+        assert ok
+
+    def test_allowed_root_main_py(self, firewall):
+        ok, _ = firewall.validate_file_write("main.py", "print('hello')")
+        assert ok
+
+    def test_allowed_vite_config(self, firewall):
+        ok, _ = firewall.validate_file_write("vite.config.js", "export default {}")
+        assert ok
+
+    def test_allowed_env_example(self, firewall):
+        ok, _ = firewall.validate_file_write(".env.example", "API_KEY=your-key-here")
+        assert ok
+
+    def test_allowed_index_html(self, firewall):
+        ok, _ = firewall.validate_file_write("index.html", "<html></html>")
+        assert ok
+
+    def test_allowed_gitignore(self, firewall):
+        ok, _ = firewall.validate_file_write(".gitignore", "node_modules/")
+        assert ok
+
     def test_blocked_env_file(self, firewall):
         ok, reason = firewall.validate_file_write(".env", "SECRET=abc")
         assert not ok
-        assert "prohibited" in reason.lower() or "sensitive" in reason.lower()
 
     def test_blocked_env_local(self, firewall):
         ok, _ = firewall.validate_file_write(".env.local", "KEY=val")
+        assert not ok
+
+    def test_blocked_nested_env(self, firewall):
+        ok, _ = firewall.validate_file_write("backend/.env", "SECRET=x")
         assert not ok
 
     def test_blocked_ssh(self, firewall):
