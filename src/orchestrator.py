@@ -635,7 +635,20 @@ class BuildOrchestrator:
                 print("")
             return
 
-        review = self.reviewer.review_files(files_dict, spec, rules)
+        # Inject contract validation results into the review
+        contracts_note = ""
+        if len(self.registry) > 0:
+            contracts_note = f"\n\n## Registered API Contracts\n{self.registry.format_for_prompt()}"
+            contract_check = self.registry.validate_frontend_against_backend()
+            if not contract_check["passed"]:
+                contracts_note += "\n\n## Contract Validation Issues\n"
+                contracts_note += "\n".join(f"- {i}" for i in contract_check["issues"])
+            sec_check = self.registry.validate_security_coverage()
+            if not sec_check["passed"]:
+                contracts_note += "\n\n## Auth Coverage Issues\n"
+                contracts_note += "\n".join(f"- {i}" for i in sec_check["issues"])
+
+        review = self.reviewer.review_files(files_dict, spec, rules + contracts_note)
 
         if self.ui:
             self.ui.spinner_stop()

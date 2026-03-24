@@ -193,11 +193,20 @@ Output ONLY the YAML, nothing else."""
         if not isinstance(parsed, dict) or "tasks" not in parsed:
             return {"tasks": original_plan.get("tasks", [])}
 
-        # Validate and sanitize agent fields
+        # Validate and sanitize
         for task in parsed["tasks"]:
             agent = task.get("agent", "coder")
             if agent not in _VALID_AGENTS:
                 task["agent"] = "coder"
+            # Warn on empty prompts — downstream agents need instructions
+            prompt = task.get("prompt", "")
+            if not prompt or not prompt.strip():
+                import warnings
+                warnings.warn(
+                    f"PM produced empty prompt for task '{task.get('id', '?')}'. "
+                    f"Agent '{agent}' will receive minimal context.",
+                    stacklevel=2,
+                )
 
         return parsed
 

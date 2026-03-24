@@ -111,9 +111,14 @@ Fix ONLY what's needed to resolve this specific crash. Do not change anything el
     def _extract_failing_files(
         self, traceback_text: str, project_root: Path,
     ) -> list[str]:
-        """Extract file paths from a traceback that belong to the project."""
+        """Extract file paths from a traceback that belong to the project.
+
+        Handles both Python and Node.js traceback formats.
+        """
         root_str = str(project_root.resolve())
         files = []
+
+        # Python: File "/path/to/file.py", line 10
         for match in re.finditer(
             r'File "([^"]+)", line \d+',
             traceback_text,
@@ -123,6 +128,32 @@ Fix ONLY what's needed to resolve this specific crash. Do not change anything el
                 rel = path.replace(root_str + "/", "")
                 if rel not in files:
                     files.append(rel)
+
+        # Node.js: at Object.<anonymous> (/path/to/file.js:10:5)
+        # Also: at /path/to/file.js:10:5
+        for match in re.finditer(
+            r'(?:at\s+(?:\S+\s+)?)?\(?([^():\s]+\.[jt]sx?):(\d+):\d+\)?',
+            traceback_text,
+        ):
+            path = match.group(1)
+            if root_str in path:
+                rel = path.replace(root_str + "/", "")
+                if rel not in files:
+                    files.append(rel)
+
+        # Node.js: Error: Cannot find module './routes/users'
+        for match in re.finditer(
+            r"Cannot find module '([^']+)'",
+            traceback_text,
+        ):
+            mod = match.group(1)
+            if mod.startswith("."):
+                # Relative module — try as file
+                for ext in [".js", ".jsx", ".ts", ".tsx", "/index.js"]:
+                    candidate = mod.lstrip("./") + ext
+                    if (project_root / candidate).exists() and candidate not in files:
+                        files.append(candidate)
+
         return files
 
     def _extract_import_targets(

@@ -28,6 +28,10 @@ from ..collaboration import (
     extract_contracts_from_response,
     validate_agent_output,
 )
+from ..collaboration.token_budget import (
+    budget_prompt,
+    estimate_tokens,
+)
 
 
 class PipelineAbortError(RuntimeError):
@@ -285,26 +289,42 @@ def make_agent_tools(
         # Give the frontend agent actual backend contracts + relevant code
         contracts_text = context.registry.format_for_prompt()
         all_code = context.bus.export_files_dict()
-        backend_code = {
+        backend_code_raw = {
             p: c for p, c in all_code.items()
             if any(kw in p.lower() for kw in (
                 "route", "api", "schema", "model", "main", "endpoint",
             ))
         }
+        backend_code_str = "\n".join(
+            f"### {p}\n```\n{c}\n```" for p, c in backend_code_raw.items()
+        )
 
+        # Apply token budget — protect spec/rules, truncate large code sections
         pm_block = _get_pm_prompts("frontend")
+        budgeted = budget_prompt(
+            spec=spec,
+            rules=rules,
+            decisions_str=decisions_str,
+            contracts=contracts_text,
+            backend_code=backend_code_str,
+            pm_prompts=pm_block,
+        )
+
+        prompt_parts = ["Generate frontend code (React components, pages, routing, API integration)."]
+        for key in ["spec", "rules", "decisions", "contracts", "backend_code", "pm_prompts"]:
+            if key in budgeted and budgeted[key]:
+                label = key.replace("_", " ").title()
+                prompt_parts.append(f"## {label}\n{budgeted[key]}")
+
         result = _send(
             "frontend",
-            f"Generate frontend code (React components, pages, routing, API integration).\n\n"
-            f"## Spec\n{spec}\n\n## Rules\n{rules}\n\n## Decisions\n{decisions_str}\n\n"
-            f"## Backend API Contracts (match these exactly)\n{contracts_text}"
-            f"{pm_block}",
+            "\n\n".join(prompt_parts),
             ctx={
                 "decisions": context.decisions,
                 "spec": spec,
                 "rules": rules,
                 "contracts": contracts_text,
-                "backend_code": backend_code,
+                "backend_code": backend_code_raw,
             },
         )
         if not result.success:

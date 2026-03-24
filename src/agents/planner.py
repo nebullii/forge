@@ -18,7 +18,34 @@ the requirements. The best stack is the one that minimizes complexity and ships
 working software quickly. A single HTML file is better than React + Vite for
 a one-page tool.
 
-━━━ STACK SELECTION GUIDE ━━━
+━━━ STEP 1: ASSESS COMPLEXITY ━━━
+
+Before picking a stack, classify the project into one of these levels:
+
+  LEVEL 1 — TRIVIAL (1 file)
+    Signals: "one button", "simple tool", "calculator", "timer", "converter",
+    no login, no database, no backend, single screen.
+    → Output: ONE index.html file. No framework, no build step, no npm.
+
+  LEVEL 2 — SIMPLE (2-5 files)
+    Signals: one user type, 1-3 features, no auth OR simple auth,
+    basic CRUD on 1-2 models, no real-time.
+    → Output: lightweight stack. HTMX + Flask/FastAPI, or minimal React.
+
+  LEVEL 3 — STANDARD (5-15 files)
+    Signals: user accounts, 3-6 features, 2-4 data models, dashboard,
+    search/filter, API + frontend.
+    → Output: full-stack framework. FastAPI + React, Django, Rails.
+
+  LEVEL 4 — COMPLEX (15+ files)
+    Signals: multiple user roles, file uploads, real-time features,
+    background jobs, complex queries, charts, email notifications.
+    → Output: full framework with extras. Django + Celery, Rails + Sidekiq,
+    Phoenix for real-time.
+
+Include your complexity assessment in the reasoning field.
+
+━━━ STEP 2: PICK STACK ━━━
 
 Use this to reason about the right stack. START FROM THE TOP — use the simplest
 option that satisfies the requirements.
@@ -265,7 +292,14 @@ Note: This is an existing project. Plan tasks that build on what exists."""
 Analyze the specification and choose the best technology stack for this specific project.
 You have no defaults — pick what genuinely fits the requirements.
 
-STACK SELECTION — reason from the project type.
+STEP 1: ASSESS COMPLEXITY before picking a stack:
+  LEVEL 1 (TRIVIAL, 1 file)  — no login, no DB, single screen → plain HTML+JS
+  LEVEL 2 (SIMPLE, 2-5 files) — basic CRUD, 1-2 models → HTMX + Flask or minimal React
+  LEVEL 3 (STANDARD, 5-15 files) — user accounts, 3-6 features → full-stack framework
+  LEVEL 4 (COMPLEX, 15+ files) — roles, uploads, real-time, background jobs → full framework + extras
+Include your complexity level in the reasoning field.
+
+STEP 2: PICK STACK — reason from the project type.
 START FROM THE SIMPLEST OPTION THAT WORKS. Do not use React, Vite, or a backend
 framework unless the project genuinely needs them.
 
