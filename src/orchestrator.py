@@ -790,4 +790,8 @@ def _format_decisions(decisions: dict) -> str:
     if changes:
         parts.append(f"\n## Changes Needed\n{changes}")
 
+    dir_structure = decisions.get("directory_structure", "")
+    if dir_structure:
+        parts.append(f"\n## Directory Structure (all agents must follow this)\n{dir_structure}")
+
     return "\n".join(parts) if parts else str(decisions)

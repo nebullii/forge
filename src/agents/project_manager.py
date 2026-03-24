@@ -24,8 +24,10 @@ AGENT ROLES:
 
 RULES FOR ENRICHED PROMPTS:
 - Each prompt must be SELF-CONTAINED: include stack, architecture, and file list
+- EVERY prompt MUST include the directory_structure from the plan decisions so the
+  agent knows exactly where to put files. This prevents file path conflicts.
 - Backend tasks: list the API endpoints/contracts this task exposes
-- Frontend tasks: list the backend contracts this task consumes
+- Frontend tasks: list the backend contracts this task consumes + include package.json
 - CI/Deploy tasks: include the stack so the agent knows what runtime to target
 - Coder tasks: list exact files and what each should contain
 
@@ -120,6 +122,7 @@ class ProjectManagerAgent(BaseAgent):
         arch = decisions.get("architecture", "")
 
         stack_lines = "\n".join(f"  {k}: {v}" for k, v in stack.items()) if stack else "  (see spec)"
+        dir_structure = decisions.get("directory_structure", decisions.get("reasoning", "(see spec)"))
 
         return f"""\
 ## Project Specification
@@ -133,6 +136,9 @@ class ProjectManagerAgent(BaseAgent):
 
 ## Architecture
 {arch or "(see spec)"}
+
+## Directory Structure (ALL agents MUST follow this)
+{dir_structure}
 
 ## Tasks from Planner
 {tasks_yaml}

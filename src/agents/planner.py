@@ -165,14 +165,32 @@ decisions:
     frontend: "..."        # "none" for API-only or CLI
     styling: "..."         # "none" for API-only or CLI
   architecture: "One sentence describing how the components connect."
-  reasoning: "2-3 sentences explaining WHY this stack fits this specific project."
+  reasoning: "2-3 sentences. Include complexity level (1-4) and WHY this stack fits."
+  directory_structure: |
+    (write the FULL directory tree here — adapted to your chosen stack)
+
+DIRECTORY STRUCTURE IS MANDATORY. Every downstream agent reads it to know where to
+put files. Use the conventions of the framework you chose:
+
+  Plain HTML:       index.html (and that's it)
+  FastAPI + React:  backend/main.py, backend/requirements.txt, frontend/package.json, frontend/src/
+  Django:           manage.py, app_name/models.py, app_name/views.py, templates/, static/, requirements.txt
+  Rails:            Gemfile, config/routes.rb, app/models/, app/controllers/, app/views/, db/migrate/
+  Express + React:  server/index.js, server/package.json, client/package.json, client/src/
+  Go + HTMX:        main.go, go.mod, templates/, static/
+  Flask + templates: app.py, templates/, static/, requirements.txt
+  CLI (Python):     cli.py, setup.py or pyproject.toml
+  CLI (Go):         main.go, go.mod
+
+CRITICAL: All tasks MUST use paths consistent with this structure. Do NOT let one
+task write backend/main.py while another writes main.py at root. Pick ONE layout.
 
 tasks:
   - id: task_01
     name: "Set up project structure and dependencies"
     description: "Create the project skeleton with package manifests and config files"
     agent: coder
-    files: [Gemfile, config/database.yml]
+    files: [list files matching your directory_structure]
   - id: task_02
     name: "..."
     description: "..."
@@ -386,14 +404,18 @@ decisions:
     frontend: "..."        # "none" for API-only or CLI
     styling: "..."         # "none" for API-only or CLI
   architecture: "One sentence: how do the components connect?"
-  reasoning: "2-3 sentences: why does this stack fit THIS project specifically?"
+  reasoning: "2-3 sentences. Include complexity level (1-4) and why this stack fits."
+  directory_structure: |
+    (write the FULL directory tree adapted to your chosen stack — see examples above)
+
+DIRECTORY STRUCTURE IS MANDATORY. All tasks MUST use paths consistent with it.
 
 tasks:
   - id: task_01
     name: "Set up project structure and dependencies"
-    description: "Create the project skeleton with package manifests and config files"
+    description: "Create the project skeleton"
     agent: coder
-    files: [Gemfile, config/database.yml]
+    files: [paths matching your directory_structure]
   - id: task_02
     name: "..."
     description: "..."
