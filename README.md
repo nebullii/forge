@@ -137,7 +137,7 @@ Edit `.forge/spec.md` — describe what you want in plain English:
 
 ```bash
 cd my-app
-$EDITOR .forge/spec.md
+nano .forge/spec.md          # or: vim, code, open — any text editor
 ```
 
 Example spec:

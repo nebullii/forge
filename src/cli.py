@@ -230,6 +230,7 @@ def cmd_new(args):
     print()
     print(f"Next steps:")
     print(f"  cd {project_name}")
+    print(f"  nano .forge/spec.md     # edit your project spec")
     print(f"  forge build")
 
 
@@ -342,7 +343,7 @@ def cmd_init(args):
         print(f"  .forge/skills/    ✓  ({count} skill files)")
 
     print("")
-    print("Next: Edit .forge/spec.md with your idea")
+    print("Next: nano .forge/spec.md    # edit your project spec")
 
 
 def cmd_dev(args):
