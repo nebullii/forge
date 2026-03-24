@@ -72,22 +72,13 @@ CLI TOOLS:
   → Rust (clap)                   — use when the CLI needs maximum performance or
                                     processes large amounts of data
 
-MOBILE APPS (iOS / Android):
-  → Swift + SwiftUI     — native iOS. Use when the spec says "iPhone app", "iOS app",
-                          or needs device hardware (mic, camera, sensors, Bluetooth,
-                          HealthKit, ARKit). Single Xcode project, no backend unless needed.
-  → Kotlin + Jetpack Compose — native Android. Use when the spec says "Android app".
-  → React Native        — cross-platform mobile. Use when the spec wants BOTH iOS and
-                          Android from one codebase and doesn't need deep hardware access.
-  → Flutter (Dart)      — cross-platform mobile. Good for custom UI-heavy apps.
-  → PWA (HTML+JS)       — "install to home screen" mobile experience. Use when the app
-                          is simple enough to be a web page but the user wants it to feel
-                          like a native app. Works offline with service workers.
-
-  IMPORTANT: If the spec mentions "iPhone", "iOS", "Android", "mobile app", or device
-  hardware (microphone, camera, GPS, Bluetooth, accelerometer) — pick a NATIVE stack.
-  Do NOT default to a web app. Web Audio API on mobile Safari has severe limitations
-  (no background audio, no lock screen, auto-pause on tab switch).
+MOBILE APPS — NOT SUPPORTED:
+  Forge cannot generate native iOS or Android apps (no Xcode project generation,
+  no Gradle, no signing config). If the spec asks for a mobile app, output this
+  exact error in the reasoning field and suggest a PWA or web app alternative:
+    "Native mobile apps (iOS/Android) are not yet supported. Consider a PWA
+     (Progressive Web App) using plain HTML+JS, which can be installed to the
+     home screen and works offline."
 
 REAL-TIME / EVENT-DRIVEN:
   → Phoenix (Elixir)  — built for this, LiveView, PubSub, channels
@@ -311,17 +302,9 @@ API-ONLY SERVICES (no frontend, consumed by clients or other services):
   Rust (Axum)      — maximum performance, memory safety, edge/embedded constraints
   Express/Hono     — lightweight JSON APIs for JS teams
 
-MOBILE APPS (iOS / Android):
-  Swift + SwiftUI     — native iOS. Use when spec says "iPhone app", "iOS app", or
-                        needs device hardware (mic, camera, sensors, Bluetooth).
-  Kotlin + Jetpack Compose — native Android.
-  React Native        — cross-platform. Use when spec wants both iOS and Android.
-  Flutter (Dart)      — cross-platform, custom UI-heavy apps.
-  PWA (HTML+JS)       — web app that installs to home screen. Use for simple mobile
-                        experiences that don't need deep hardware access.
-
-  IMPORTANT: If the spec mentions "iPhone", "iOS", "Android", "mobile app", or device
-  hardware — pick a NATIVE stack. Do NOT default to a web app.
+MOBILE APPS — NOT SUPPORTED:
+  Forge cannot generate native iOS or Android apps. If the spec asks for a mobile
+  app, suggest a PWA (Progressive Web App) with plain HTML+JS instead.
 
 CLI TOOLS:
   Python (Click/Typer) — fast to write, great for scripting

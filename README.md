@@ -638,6 +638,7 @@ Analyzes the spec and produces a structured build plan.
 
 | Project type | Likely stack |
 |---|---|
+| Single-page tool / utility | Plain HTML + CSS + JS (one file) |
 | Full-stack web app (CRUD, admin, forms) | Rails, Django, Laravel |
 | Real-time features (chat, live updates) | Phoenix (Elixir) |
 | Complex interactive SPA | React + Vite, SvelteKit |
@@ -646,6 +647,9 @@ Analyzes the spec and produces a structured build plan.
 | CLI tool | Python (Click/Typer), Go (cobra) |
 | Data pipeline or ML | Python + Pandas/SQLAlchemy |
 | Static site or docs | Plain HTML, 11ty, Hugo |
+
+**Not supported yet:** Native mobile apps (iOS/Android). Forge can't generate Xcode
+projects or Gradle builds. For mobile-like experiences, use a PWA (Progressive Web App).
 
 ### ProjectManagerAgent
 
