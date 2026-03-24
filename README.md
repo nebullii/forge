@@ -95,10 +95,100 @@ vs `POST /users` mismatches.
 
 ---
 
+## Quick Start
+
+### 1. Install
+
+```bash
+pip install forge-ai                # classic mode (minimal deps)
+pip install "forge-ai[adk]"        # multi-agent parallel mode (recommended)
+```
+
+Or from source:
+
+```bash
+git clone https://github.com/nebullii/forge
+cd forge
+pip install -e ".[adk]"
+```
+
+### 2. Set your API key
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+# OR
+export OPENAI_API_KEY=sk-...
+# OR
+export TOGETHER_API_KEY=...
+# OR run Ollama locally (no key needed): ollama serve
+```
+
+### 3. Create a project
+
+```bash
+forge new my-app -t web-app       # from template
+# OR
+forge new my-app                  # interactive picker
+```
+
+### 4. Write your spec
+
+Edit `.forge/spec.md` — describe what you want in plain English:
+
+```bash
+cd my-app
+$EDITOR .forge/spec.md
+```
+
+Example spec:
+
+```markdown
+# Project: Task Tracker
+
+## What
+A web app for managing personal tasks with user accounts.
+
+## Features
+- Email + password login (JWT)
+- Create, complete, and delete tasks
+- Dashboard showing pending vs completed counts
+
+## Stack
+React + Vite, FastAPI, SQLite
+
+## Non-goals
+No team features. No notifications.
+```
+
+### 5. Build
+
+```bash
+forge build                       # classic mode (sequential, works with any provider)
+forge build --adk                 # multi-agent mode (parallel, 7 specialists)
+forge build -p openai             # use a specific provider
+forge build -v                    # verbose output (see agent tool calls)
+```
+
+### 6. Run locally
+
+```bash
+forge dev                         # auto-detects project type, starts dev server
+```
+
+### 7. Add features incrementally
+
+```bash
+forge build --feature "add dark mode toggle"
+forge build --feature "add JWT refresh tokens"
+```
+
+Contracts from the previous build are loaded automatically so agents know what endpoints already exist.
+
+---
+
 ## Contents
 
 - [How It Works](#how-it-works)
-- [Quick Start](#quick-start)
 - [System Design](#system-design)
 - [Build Modes](#build-modes)
 - [Agent Reference](#agent-reference)
@@ -163,34 +253,6 @@ Phase 2: Building...
 
 Phase 3: Reviewing...
    Review passed.
-```
-
----
-
-## Quick Start
-
-```bash
-# Install
-pip install forge-ai
-
-# For multi-agent ADK mode
-pip install "forge-ai[adk]"
-
-# Set your LLM provider key
-export ANTHROPIC_API_KEY=sk-ant-...   # or OPENAI_API_KEY, TOGETHER_API_KEY, etc.
-
-# Create a project from a template
-forge new my-app -t web-app
-cd my-app
-
-# Edit the spec
-$EDITOR .forge/spec.md
-
-# Build
-forge build
-
-# Run locally
-forge dev
 ```
 
 ---
