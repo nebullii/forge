@@ -86,10 +86,14 @@ class TestPathValidation:
         ok, _ = firewall.validate_file_write(".git/config", "content")
         assert not ok
 
-    def test_path_not_in_allowlist(self, firewall):
-        ok, reason = firewall.validate_file_write("random_dir/file.txt", "content")
-        assert not ok
-        assert "allowlist" in reason.lower()
+    def test_unknown_project_dir_allowed(self, firewall):
+        """Agents generate unpredictable dir names — these must be allowed."""
+        ok, _ = firewall.validate_file_write("MicAmplifier/ContentView.swift", "struct ContentView {}")
+        assert ok
+
+    def test_nested_project_dir_allowed(self, firewall):
+        ok, _ = firewall.validate_file_write("my-app/src/utils/helpers.ts", "export {}")
+        assert ok
 
 
 class TestContentScanning:

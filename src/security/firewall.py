@@ -167,24 +167,19 @@ class AgenticFirewall:
         self.audit_log = audit_log or Path("firewall_audit.log")
 
     def validate_file_write(self, filepath: str, content: str) -> Tuple[bool, str]:
-        """Validate if a file write is permitted."""
-        
-        # Check Blocked Paths
+        """Validate if a file write is permitted.
+
+        Security model: block dangerous paths first, then allow everything else.
+        Agents generate unpredictable directory names (MicAmplifier/, my-app/, etc.)
+        so an allowlist approach breaks on real projects. The blocklist is the real
+        security boundary.
+        """
+
+        # 1. Block dangerous paths (secrets, system files, dotfiles)
         for pattern in self.policy.get("blocked_paths", []):
             if re.search(pattern, filepath):
                 self._log_violation(filepath, "BLOCKED_PATH")
                 return False, f"Access to sensitive path '{filepath}' is prohibited by policy."
-
-        # Check Allowed Paths
-        is_allowed = False
-        for pattern in self.policy.get("allowed_paths", []):
-            if re.search(pattern, filepath):
-                is_allowed = True
-                break
-        
-        if not is_allowed:
-            self._log_violation(filepath, "PATH_NOT_IN_ALLOWLIST")
-            return False, f"Path '{filepath}' is not in the allowlist. Only project-related files can be edited."
 
         # Check for Malicious Patterns in Content
         # Shell scripts and CI configs are exempt from *code-level* patterns
