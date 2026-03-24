@@ -188,7 +188,6 @@ Contracts from the previous build are loaded automatically so agents know what e
 
 ## Contents
 
-- [How It Works](#how-it-works)
 - [System Design](#system-design)
 - [Build Modes](#build-modes)
 - [Agent Reference](#agent-reference)
@@ -198,62 +197,6 @@ Contracts from the previous build are loaded automatically so agents know what e
 - [Configuration](#configuration)
 - [Installation](#installation)
 - [Contributing](#contributing)
-
----
-
-## How It Works
-
-**1. Write a spec.** Create a plain markdown file describing what you want to build.
-
-```markdown
-# Project: Invoice Tracker
-
-## What
-A web app for freelancers to track invoices and payments.
-
-## Features
-- Create and manage client invoices
-- Mark invoices as paid/unpaid
-- Dashboard with outstanding balance summary
-- PDF export
-
-## Users
-Solo freelancers, small agencies
-```
-
-**2. Run the build.** Forge analyzes the spec, chooses the right technology stack,
-breaks the project into tasks, and executes each task with a specialized agent.
-
-```bash
-forge build
-```
-
-**3. Get working code.** Every file is written through a security firewall, build
-state is saved after each task, and a reviewer validates the output before finishing.
-
-```
-Phase 1: Planning...
-   Plan: 6 tasks
-     - Set up Rails project with PostgreSQL
-     - Invoice model and database migrations
-     - Client management (CRUD)
-     - Invoice creation and status tracking
-     - Dashboard with balance summary
-     - PDF export with Prawn
-
-Phase 2: Building...
-   [1/6] Set up Rails project with PostgreSQL
-      + Gemfile
-      + config/database.yml
-      + config/routes.rb
-   [2/6] Invoice model and database migrations
-      + db/migrate/001_create_invoices.rb
-      + app/models/invoice.rb
-   ...
-
-Phase 3: Reviewing...
-   Review passed.
-```
 
 ---
 
@@ -746,20 +689,17 @@ reads its policy from `.forge/firewall_policy.json`.
 
 ### What the firewall enforces
 
-**Path allowlist** — agents can only write to project-related paths:
+**Path blocklist** — agents cannot write to sensitive paths regardless of content:
 
 ```
-src/, app/, backend/, frontend/, tests/, docs/, public/, static/,
-scripts/, config/, infra/, .github/, and common root files
-(Makefile, Dockerfile, docker-compose.yml, package.json, etc.)
+.env, .env.local, .env.production, .ssh/, .aws/, .gnupg/,
+.kube/, .git/, .npmrc, .pypirc, config/secrets.json,
+/etc/, /var/, /private/
 ```
 
-**Path blocklist** — certain paths are immutable regardless of allowlist:
-
-```
-.env*, .ssh/, .aws/, .gnupg/, .kube/, .npmrc, .pypirc,
-config/secrets.json, /etc/, /var/, /private/
-```
+All other paths within the project root are allowed. This lets agents generate
+any project structure (e.g., `MicAmplifier/`, `backend/`, `my-app/src/`) without
+hitting false positives from a rigid allowlist.
 
 **Content pattern scanning** — rejects files containing:
 
@@ -897,21 +837,21 @@ Each project has its own `.forge/firewall_policy.json`. Override defaults by edi
 
 ```json
 {
-  "allowed_paths": [
-    "src/.*",
-    "app/.*",
-    "your-custom-dir/.*"
-  ],
   "blocked_paths": [
-    ".env.*",
-    ".ssh/.*"
+    "^\\.env$",
+    "\\.env\\.local",
+    "\\.ssh/.*",
+    "\\.git/.*"
   ],
   "blocked_patterns": [
     "eval\\(",
-    "exec\\("
+    "exec\\(",
+    "os\\.system\\(",
+    "__import__"
   ],
-  "blocked_patterns_exempt_extensions": [
-    ".sh", ".yml", ".yaml", "Dockerfile", "Makefile"
+  "shell_blocked_patterns": [
+    "curl\\s+.*\\|\\s*(?:sh|bash)",
+    "chmod\\s+777"
   ]
 }
 ```
