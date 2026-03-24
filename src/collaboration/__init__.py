@@ -24,6 +24,7 @@ from .contracts import (
     ContractRegistry,
     extract_contracts_from_response,
 )
+from .validation import validate_agent_output, ValidationResult
 
 __all__ = [
     "CodeArtifact",
@@ -39,4 +40,6 @@ __all__ = [
     "UIDataDependency",
     "ContractRegistry",
     "extract_contracts_from_response",
+    "validate_agent_output",
+    "ValidationResult",
 ]

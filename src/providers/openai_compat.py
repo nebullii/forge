@@ -31,7 +31,12 @@ class OpenAIProvider(BaseProvider):
             messages=msgs,
             max_tokens=self.config.max_tokens,
         )
-        return response.choices[0].message.content
+        if not response.choices:
+            raise RuntimeError("OpenAI returned an empty response (no choices)")
+        content = response.choices[0].message.content
+        if content is None:
+            raise RuntimeError("OpenAI returned a null message content")
+        return content
 
     def stream(self, messages: list[dict], system: str = "") -> Generator[str, None, None]:
         msgs = []
@@ -45,5 +50,5 @@ class OpenAIProvider(BaseProvider):
             stream=True,
         )
         for chunk in response:
-            if chunk.choices[0].delta.content:
+            if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content

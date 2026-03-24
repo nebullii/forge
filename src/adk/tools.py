@@ -26,6 +26,7 @@ from ..collaboration import (
     ReviewArtifact,
     BuildLogArtifact,
     extract_contracts_from_response,
+    validate_agent_output,
 )
 
 
@@ -115,6 +116,20 @@ def make_agent_tools(
             "\n\n## Task Instructions (from Project Manager)\n"
             + "\n---\n".join(prompts)
         )
+
+    def _validate_and_publish(
+        agent_name: str,
+        response_text: str,
+        files: list[tuple[str, str]],
+        task_id: str = "",
+    ) -> str:
+        """Validate agent output, publish files if valid, return error string if not."""
+        result = validate_agent_output(agent_name, response_text, files)
+        if not result.valid:
+            _log_error(result.reason, agent_name)
+            return f"ERROR: {result.reason}"
+        _publish_files(files, agent_name, task_id)
+        return ""
 
     def _publish_files(
         files: list[tuple[str, str]],
@@ -235,10 +250,14 @@ def make_agent_tools(
             return f"ERROR: Backend failed — {result.error}"
 
         files = result.get_files()
-        _publish_files(files, "backend")
+        response_text = result.get_text()
+
+        # Validate output before publishing
+        validation_err = _validate_and_publish("backend", response_text, files)
+        if validation_err:
+            return validation_err
 
         # Extract and register structured contracts
-        response_text = result.get_text()
         contracts = extract_contracts_from_response(response_text, producer_agent="backend")
         context.registry.register_many(contracts.get("api", []))
         context.registry.register_many(contracts.get("models", []))
@@ -293,7 +312,9 @@ def make_agent_tools(
             return f"ERROR: Frontend failed — {result.error}"
 
         files = result.get_files()
-        _publish_files(files, "frontend")
+        validation_err = _validate_and_publish("frontend", result.get_text(), files)
+        if validation_err:
+            return validation_err
 
         paths = [f[0] for f in files]
         return (
@@ -371,7 +392,9 @@ def make_agent_tools(
             return f"ERROR: CI/CD failed — {result.error}"
 
         files = result.get_files()
-        _publish_files(files, "ci")
+        validation_err = _validate_and_publish("ci", result.get_text(), files)
+        if validation_err:
+            return validation_err
 
         paths = [f[0] for f in files]
         return f"CI/CD complete. {len(files)} files: {', '.join(paths)}"
@@ -399,7 +422,9 @@ def make_agent_tools(
             return f"ERROR: Deploy config failed — {result.error}"
 
         files = result.get_files()
-        _publish_files(files, "deploy")
+        validation_err = _validate_and_publish("deploy", result.get_text(), files)
+        if validation_err:
+            return validation_err
 
         paths = [f[0] for f in files]
         return f"Deploy config complete. {len(files)} files: {', '.join(paths)}"

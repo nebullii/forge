@@ -21,6 +21,8 @@ class AnthropicProvider(BaseProvider):
         if system:
             kwargs["system"] = system
         response = self.client.messages.create(**kwargs)
+        if not response.content:
+            raise RuntimeError("Anthropic returned an empty response (no content blocks)")
         return response.content[0].text
 
     def stream(self, messages: list[dict], system: str = "") -> Generator[str, None, None]:

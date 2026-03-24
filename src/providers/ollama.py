@@ -24,7 +24,10 @@ class OllamaProvider(BaseProvider):
             timeout=300,
         )
         response.raise_for_status()
-        return response.json()["message"]["content"]
+        data = response.json()
+        if "message" not in data or "content" not in data.get("message", {}):
+            raise RuntimeError(f"Ollama returned unexpected response: {str(data)[:200]}")
+        return data["message"]["content"]
 
     def stream(self, messages: list[dict], system: str = "") -> Generator[str, None, None]:
         import requests

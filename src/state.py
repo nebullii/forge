@@ -1,10 +1,15 @@
 """Build state management -- YAML-based, file-stored, resumable."""
 
 import hashlib
+import logging
+import os
+import tempfile
 import yaml
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -61,26 +66,51 @@ def _load_build(data: dict) -> BuildState:
 
 
 def load_build_state(forge_path: Path) -> BuildState:
-    """Load build state from .forge/build-state.yaml, or return fresh state."""
+    """Load build state from .forge/build-state.yaml, or return fresh state.
+
+    Handles corrupted YAML gracefully — logs a warning and returns fresh state
+    rather than crashing the CLI.
+    """
     state_path = forge_path / STATE_FILE
     if not state_path.exists():
         return BuildState()
 
-    with open(state_path) as f:
-        data = yaml.safe_load(f) or {}
+    try:
+        with open(state_path) as f:
+            data = yaml.safe_load(f) or {}
+    except (yaml.YAMLError, OSError) as exc:
+        logger.warning("Corrupted build state at %s (%s), starting fresh", state_path, exc)
+        return BuildState()
 
-    tasks = [_load_task(t) for t in data.pop("tasks", [])]
+    if not isinstance(data, dict):
+        logger.warning("Invalid build state (expected dict), starting fresh")
+        return BuildState()
+
+    tasks = [_load_task(t) for t in data.pop("tasks", []) if isinstance(t, dict)]
     data["tasks"] = tasks
 
     return _load_build(data)
 
 
 def save_build_state(forge_path: Path, state: BuildState):
-    """Persist build state to .forge/build-state.yaml."""
+    """Persist build state to .forge/build-state.yaml.
+
+    Uses atomic write (temp file + rename) so a crash mid-write can't corrupt
+    the state file.
+    """
     state_path = forge_path / STATE_FILE
     data = asdict(state)
-    with open(state_path, "w") as f:
-        yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+    try:
+        fd, tmp_path = tempfile.mkstemp(
+            dir=forge_path, prefix=".state-", suffix=".tmp",
+        )
+        with os.fdopen(fd, "w") as f:
+            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+        os.replace(tmp_path, state_path)
+    except OSError:
+        # Fallback: direct write (e.g., filesystem doesn't support rename)
+        with open(state_path, "w") as f:
+            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
 
 
 def compute_spec_hash(forge_path: Path) -> str:

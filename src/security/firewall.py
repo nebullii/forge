@@ -79,6 +79,15 @@ DEFAULT_POLICY = {
         ".yml", ".yaml",
         "Dockerfile", "Makefile",
         ".mk", ".containerfile"
+    ],
+    "shell_blocked_patterns": [
+        "curl\\s+.*\\|\\s*(?:sh|bash)",
+        "wget\\s+.*\\|\\s*(?:sh|bash)",
+        "nc\\s+-e",
+        "\\brm\\s+-rf\\s+/[^.]",
+        "chmod\\s+777",
+        "mkfifo.*\\/dev\\/tcp",
+        "base64\\s+-d.*\\|\\s*(?:sh|bash)"
     ]
 }
 
@@ -88,8 +97,11 @@ class AgenticFirewall:
     def __init__(self, policy_path: Optional[Path] = None, audit_log: Optional[Path] = None):
         self.policy = DEFAULT_POLICY
         if policy_path and policy_path.exists():
-            with open(policy_path, "r") as f:
-                self.policy = json.load(f)
+            try:
+                with open(policy_path, "r") as f:
+                    self.policy = json.load(f)
+            except (json.JSONDecodeError, OSError) as exc:
+                logger.warning("Invalid firewall policy at %s (%s), using defaults", policy_path, exc)
         
         self.audit_log = audit_log or Path("firewall_audit.log")
 
@@ -114,15 +126,21 @@ class AgenticFirewall:
             return False, f"Path '{filepath}' is not in the allowlist. Only project-related files can be edited."
 
         # Check for Malicious Patterns in Content
-        # Exempt shell scripts, CI configs, and build files — these legitimately use
-        # subprocess, eval, exec, etc. as part of their purpose.
+        # Shell scripts and CI configs are exempt from *code-level* patterns
+        # (subprocess, eval, etc.) but get their own scan for shell exploits.
         exempt_exts = self.policy.get("blocked_patterns_exempt_extensions", [])
         filename = Path(filepath).name
         is_exempt = any(
             filename == ext or filename.endswith(ext)
             for ext in exempt_exts
         )
-        if not is_exempt:
+        if is_exempt:
+            # Scoped scanning: shell/CI files get shell-specific exploit checks
+            for pattern in self.policy.get("shell_blocked_patterns", []):
+                if re.search(pattern, content):
+                    self._log_violation(filepath, f"SHELL_EXPLOIT_PATTERN: {pattern}")
+                    return False, f"Dangerous shell pattern detected in '{filepath}'."
+        else:
             for pattern in self.policy.get("blocked_patterns", []):
                 if re.search(pattern, content):
                     self._log_violation(filepath, f"MALICIOUS_CONTENT_PATTERN: {pattern}")
