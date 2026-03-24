@@ -23,21 +23,27 @@ class DevServer:
     def __init__(self, project_path: Path):
         self.project_path = project_path
         self.process = None
+        self._provider = None       # cached across fix attempts
+        self._provider_config = None
 
     def detect_project_type(self) -> tuple[str, list[str]]:
         """Detect project type and return (type, command)."""
 
-        # Python with uvicorn (FastAPI/Starlette)
-        if (self.project_path / "main.py").exists():
-            content = (self.project_path / "main.py").read_text()[:2000]
-            if "fastapi" in content.lower() or "starlette" in content.lower():
-                return ("python-uvicorn", ["uvicorn", "main:app", "--reload"])
-
-        # Python with Flask
-        if (self.project_path / "app.py").exists():
-            content = (self.project_path / "app.py").read_text()[:2000]
-            if "flask" in content.lower():
-                return ("python-flask", ["flask", "run", "--reload"])
+        # Python with uvicorn (FastAPI/Starlette) — check root and common subdirs
+        for py_dir in ["", "backend", "server", "api", "app", "src"]:
+            base = self.project_path / py_dir if py_dir else self.project_path
+            for entry in ["main.py", "app.py"]:
+                candidate = base / entry
+                if candidate.exists():
+                    content = candidate.read_text()[:2000]
+                    if "fastapi" in content.lower() or "starlette" in content.lower():
+                        module = f"{entry.replace('.py', '')}:app"
+                        if py_dir:
+                            module = f"{py_dir}.{module}"
+                        return ("python-uvicorn", ["uvicorn", module, "--reload"])
+                    if "flask" in content.lower():
+                        cmd = ["python", str(candidate.relative_to(self.project_path))]
+                        return ("python-flask", cmd)
 
         # Python generic
         if (self.project_path / "main.py").exists():
@@ -180,25 +186,27 @@ class DevServer:
             print("  No error output to diagnose.")
             return False
 
-        # Try to load a provider
-        try:
-            from .config import load_config, get_provider_config
-            from .providers import create_provider
-            from .agents.debug import DebugAgent
+        # Load provider once, reuse across attempts
+        if self._provider is None:
+            try:
+                from .config import load_config, get_provider_config
+                from .providers import create_provider
 
-            config = load_config()
-            if not config:
-                print("  No config found — cannot auto-fix.")
+                config = load_config()
+                if not config:
+                    print("  No config found — cannot auto-fix.")
+                    return False
+                self._provider_config = get_provider_config(config)
+                self._provider = create_provider(self._provider_config)
+            except (ValueError, ImportError, Exception) as e:
+                print(f"  Auto-fix unavailable: {e}")
                 return False
-            provider_config = get_provider_config(config)
-            provider = create_provider(provider_config)
-        except (ValueError, ImportError, Exception) as e:
-            print(f"  Auto-fix unavailable: {e}")
-            return False
 
-        print(f"  Debug agent analyzing crash... ({provider_config})")
+        from .agents.debug import DebugAgent
 
-        agent = DebugAgent(provider, self.project_path)
+        print(f"  Debug agent analyzing crash... ({self._provider_config})")
+
+        agent = DebugAgent(self._provider, self.project_path)
 
         try:
             fixes = agent.diagnose_and_fix(stderr_output, self.project_path)

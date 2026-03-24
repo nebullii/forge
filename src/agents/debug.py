@@ -30,7 +30,11 @@ class DebugAgent(BaseAgent):
         "```\n\n"
         "- If the fix requires reading other files (e.g., to check an import path), "
         "the relevant files will be provided in context.\n"
-        "- Be precise. One fix per crash."
+        "- Be precise. One fix per crash.\n"
+        "- NEVER add comments to JSON files (package.json, tsconfig.json, etc.) — "
+        "JSON does not support comments. This will break the project.\n"
+        "- When fixing import errors, check the actual filenames on disk before "
+        "writing the fix."
     )
 
     def diagnose_and_fix(
