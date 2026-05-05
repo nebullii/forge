@@ -1,0 +1,13 @@
+# Forge build policy
+# approval_gates can include: plan, build, review, task_write
+# allowed_frameworks and allowed_agents are optional allowlists
+schema_version: 1
+mode: balanced
+approval_mode: off
+approval_gates: []
+allowed_frameworks: []
+allowed_agents: []
+allow_adk: true
+require_review: false
+auto_export_openapi: true
+openapi_title: Forge Generated API
