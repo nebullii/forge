@@ -20,7 +20,9 @@ class TaskState:
     description: str = ""
     status: str = "pending"
     agent: str = ""
-    prompt: str = ""        # enriched per-agent prompt (from ProjectManagerAgent)
+    specialization: str = ""
+    planned_files: list[str] = field(default_factory=list)
+    prompt: str = ""        # optional task-specific prompt override
     contracts: str = ""     # API contracts this task exposes
     files_written: list[str] = field(default_factory=list)
     error: str = ""

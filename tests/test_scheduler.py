@@ -6,7 +6,7 @@ import time
 import pytest
 
 from src.scheduler import (
-    AGENT_DEPENDENCIES,
+    TASK_DEPENDENCIES,
     TaskNode,
     build_dependency_graph,
     ParallelScheduler,
@@ -20,9 +20,9 @@ from src.scheduler import (
 class TestBuildDependencyGraph:
     def test_single_agent_sequential(self):
         tasks = [
-            {"id": "t1", "agent": "coder"},
-            {"id": "t2", "agent": "coder"},
-            {"id": "t3", "agent": "coder"},
+            {"id": "t1", "agent": "builder", "specialization": "setup"},
+            {"id": "t2", "agent": "builder", "specialization": "setup"},
+            {"id": "t3", "agent": "builder", "specialization": "setup"},
         ]
         graph = build_dependency_graph(tasks)
         assert graph[0].depends_on == set()
@@ -32,10 +32,10 @@ class TestBuildDependencyGraph:
     def test_independent_agents_no_cross_deps(self):
         """Backend, CI, Deploy are all independent (depend only on coder)."""
         tasks = [
-            {"id": "t1", "agent": "coder"},
-            {"id": "t2", "agent": "backend"},
-            {"id": "t3", "agent": "ci"},
-            {"id": "t4", "agent": "deploy"},
+            {"id": "t1", "agent": "builder", "specialization": "setup"},
+            {"id": "t2", "agent": "builder", "specialization": "backend"},
+            {"id": "t3", "agent": "builder", "specialization": "ci"},
+            {"id": "t4", "agent": "builder", "specialization": "deploy"},
         ]
         graph = build_dependency_graph(tasks)
         # All three depend on coder (t1), not on each other
@@ -45,16 +45,16 @@ class TestBuildDependencyGraph:
 
     def test_frontend_depends_on_backend(self):
         tasks = [
-            {"id": "t1", "agent": "backend"},
-            {"id": "t2", "agent": "frontend"},
+            {"id": "t1", "agent": "builder", "specialization": "backend"},
+            {"id": "t2", "agent": "builder", "specialization": "frontend"},
         ]
         graph = build_dependency_graph(tasks)
         assert graph[1].depends_on == {"t1"}
 
     def test_security_depends_on_backend_and_frontend(self):
         tasks = [
-            {"id": "t1", "agent": "backend"},
-            {"id": "t2", "agent": "frontend"},
+            {"id": "t1", "agent": "builder", "specialization": "backend"},
+            {"id": "t2", "agent": "builder", "specialization": "frontend"},
             {"id": "t3", "agent": "security"},
         ]
         graph = build_dependency_graph(tasks)
@@ -62,26 +62,28 @@ class TestBuildDependencyGraph:
 
     def test_full_pipeline(self):
         tasks = [
-            {"id": "t1", "agent": "coder"},
-            {"id": "t2", "agent": "backend"},
-            {"id": "t3", "agent": "ci"},
-            {"id": "t4", "agent": "deploy"},
-            {"id": "t5", "agent": "frontend"},
-            {"id": "t6", "agent": "security"},
+            {"id": "t1", "agent": "builder", "specialization": "setup"},
+            {"id": "t2", "agent": "builder", "specialization": "backend"},
+            {"id": "t3", "agent": "builder", "specialization": "ci"},
+            {"id": "t4", "agent": "builder", "specialization": "deploy"},
+            {"id": "t5", "agent": "builder", "specialization": "frontend"},
+            {"id": "t6", "agent": "builder", "specialization": "integration"},
         ]
         graph = build_dependency_graph(tasks)
-        assert graph[0].depends_on == set()       # coder: no deps
-        assert graph[1].depends_on == {"t1"}       # backend: coder
-        assert graph[2].depends_on == {"t1"}       # ci: coder
-        assert graph[3].depends_on == {"t1"}       # deploy: coder
-        assert graph[4].depends_on == {"t2"}       # frontend: backend
-        assert "t2" in graph[5].depends_on         # security: backend
-        assert "t5" in graph[5].depends_on         # security: frontend
+        assert graph[0].depends_on == set()         # setup: no deps
+        assert graph[1].depends_on == {"t1"}        # backend: setup
+        assert graph[2].depends_on == {"t1"}        # ci: setup
+        assert graph[3].depends_on == {"t1"}        # deploy: setup
+        assert graph[4].depends_on == {"t2"}        # frontend: backend
+        assert "t2" in graph[5].depends_on          # integration: backend
+        assert "t5" in graph[5].depends_on          # integration: frontend
+        assert "t3" in graph[5].depends_on          # integration: ci
+        assert "t4" in graph[5].depends_on          # integration: deploy
 
-    def test_missing_agent_defaults_to_coder(self):
+    def test_missing_agent_defaults_to_setup(self):
         tasks = [{"id": "t1"}]  # no agent field
         graph = build_dependency_graph(tasks)
-        assert graph[0].agent == "coder"
+        assert graph[0].agent == "setup"
 
     def test_empty_tasks(self):
         assert build_dependency_graph([]) == []
@@ -89,11 +91,12 @@ class TestBuildDependencyGraph:
     def test_accepts_objects_with_attributes(self):
         """Scheduler should handle TaskState-like objects, not just dicts."""
         class FakeTask:
-            def __init__(self, id, agent):
+            def __init__(self, id, agent, specialization=""):
                 self.id = id
                 self.agent = agent
+                self.specialization = specialization
 
-        tasks = [FakeTask("t1", "coder"), FakeTask("t2", "backend")]
+        tasks = [FakeTask("t1", "builder", "setup"), FakeTask("t2", "builder", "backend")]
         graph = build_dependency_graph(tasks)
         assert graph[1].depends_on == {"t1"}
 
@@ -105,9 +108,9 @@ class TestBuildDependencyGraph:
 class TestParallelScheduler:
     def test_all_tasks_complete(self):
         tasks = [
-            {"id": "t1", "agent": "coder"},
-            {"id": "t2", "agent": "backend"},
-            {"id": "t3", "agent": "frontend"},
+            {"id": "t1", "agent": "builder", "specialization": "setup"},
+            {"id": "t2", "agent": "builder", "specialization": "backend"},
+            {"id": "t3", "agent": "builder", "specialization": "frontend"},
         ]
         graph = build_dependency_graph(tasks)
         completed = []
@@ -121,9 +124,9 @@ class TestParallelScheduler:
 
     def test_ordering_respected(self):
         tasks = [
-            {"id": "t1", "agent": "coder"},
-            {"id": "t2", "agent": "backend"},
-            {"id": "t3", "agent": "frontend"},
+            {"id": "t1", "agent": "builder", "specialization": "setup"},
+            {"id": "t2", "agent": "builder", "specialization": "backend"},
+            {"id": "t3", "agent": "builder", "specialization": "frontend"},
         ]
         graph = build_dependency_graph(tasks)
         order = []
@@ -141,16 +144,16 @@ class TestParallelScheduler:
         ends = {tid: i for i, (ev, tid) in enumerate(order) if ev == "end"}
         starts = {tid: i for i, (ev, tid) in enumerate(order) if ev == "start"}
 
-        assert starts["t2"] > ends["t1"], "backend must wait for coder"
+        assert starts["t2"] > ends["t1"], "backend must wait for setup"
         assert starts["t3"] > ends["t2"], "frontend must wait for backend"
 
     def test_parallel_agents_overlap(self):
         """Backend, CI, Deploy should start before any of them finishes."""
         tasks = [
-            {"id": "t1", "agent": "coder"},
-            {"id": "t2", "agent": "backend"},
-            {"id": "t3", "agent": "ci"},
-            {"id": "t4", "agent": "deploy"},
+            {"id": "t1", "agent": "builder", "specialization": "setup"},
+            {"id": "t2", "agent": "builder", "specialization": "backend"},
+            {"id": "t3", "agent": "builder", "specialization": "ci"},
+            {"id": "t4", "agent": "builder", "specialization": "deploy"},
         ]
         graph = build_dependency_graph(tasks)
         order = []
@@ -176,9 +179,9 @@ class TestParallelScheduler:
 
     def test_failure_propagation(self):
         tasks = [
-            {"id": "t1", "agent": "coder"},
-            {"id": "t2", "agent": "backend"},
-            {"id": "t3", "agent": "frontend"},  # depends on t2
+            {"id": "t1", "agent": "builder", "specialization": "setup"},
+            {"id": "t2", "agent": "builder", "specialization": "backend"},
+            {"id": "t3", "agent": "builder", "specialization": "frontend"},  # depends on t2
         ]
         graph = build_dependency_graph(tasks)
 
@@ -192,9 +195,9 @@ class TestParallelScheduler:
 
     def test_failure_doesnt_skip_independent(self):
         tasks = [
-            {"id": "t1", "agent": "coder"},
-            {"id": "t2", "agent": "backend"},  # will fail
-            {"id": "t3", "agent": "ci"},        # independent, should still run
+            {"id": "t1", "agent": "builder", "specialization": "setup"},
+            {"id": "t2", "agent": "builder", "specialization": "backend"},  # will fail
+            {"id": "t3", "agent": "builder", "specialization": "ci"},        # independent, should still run
         ]
         graph = build_dependency_graph(tasks)
         completed = []
@@ -214,7 +217,7 @@ class TestParallelScheduler:
         assert failed == []
 
     def test_single_task(self):
-        graph = [TaskNode(task_id="t1", agent="coder")]
+        graph = [TaskNode(task_id="t1", agent="setup")]
         result = []
 
         def run(tid):

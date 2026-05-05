@@ -8,14 +8,19 @@ Provides:
 """
 
 from .models import (
+    TaskPlanArtifact,
     CodeArtifact,
+    BuildOutputArtifact,
     DecisionArtifact,
     ReviewArtifact,
+    ReviewFindingArtifact,
     ContractArtifact,
     BuildLogArtifact,
     ReworkRequestArtifact,
+    VerificationArtifact,
 )
 from .artifact_bus import ArtifactBus
+from .store import ArtifactStore
 from .contracts import (
     ApiEndpointContract,
     DataModelContract,
@@ -28,12 +33,17 @@ from .validation import validate_agent_output, ValidationResult
 
 __all__ = [
     "CodeArtifact",
+    "TaskPlanArtifact",
+    "BuildOutputArtifact",
     "DecisionArtifact",
     "ReviewArtifact",
+    "ReviewFindingArtifact",
     "ContractArtifact",
     "BuildLogArtifact",
     "ReworkRequestArtifact",
+    "VerificationArtifact",
     "ArtifactBus",
+    "ArtifactStore",
     "ApiEndpointContract",
     "DataModelContract",
     "EventContract",

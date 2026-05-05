@@ -1,15 +1,13 @@
-"""Dependency-aware parallel task scheduler for classic builds.
+"""Dependency-aware parallel task scheduler for builder specializations.
 
-Computes a dependency graph from agent assignments and runs independent tasks
+Computes a dependency graph from task lanes and runs independent tasks
 concurrently via ``ThreadPoolExecutor``, while respecting ordering constraints.
 
 Dependency rules:
-- Tasks assigned to the **same agent** run sequentially (in plan order).
-- Tasks assigned to **different agents** follow ``AGENT_DEPENDENCIES``
-  (e.g., frontend waits for backend; security waits for backend + frontend).
+- Tasks assigned to the **same lane** run sequentially (in plan order).
+- Tasks assigned to **different lanes** follow ``TASK_DEPENDENCIES``
+  (e.g., frontend waits for backend; integration waits for all implementation lanes).
 - Tasks with no upstream dependencies run in parallel.
-
-Falls back to sequential execution when all tasks use the same agent.
 """
 
 from __future__ import annotations
@@ -21,16 +19,18 @@ from typing import Callable, Dict, List, Optional, Set
 
 
 # ---------------------------------------------------------------------------
-# Dependency rules (agent-level)
+# Dependency rules (builder-specialization level)
 # ---------------------------------------------------------------------------
 
-AGENT_DEPENDENCIES: Dict[str, Set[str]] = {
-    "coder":    set(),                          # setup tasks — no deps
-    "backend":  {"coder"},                      # needs project setup
-    "ci":       {"coder"},                      # needs project setup
-    "deploy":   {"coder"},                      # needs project setup
-    "frontend": {"backend"},                    # needs API contracts
-    "security": {"backend", "frontend"},        # needs all code
+TASK_DEPENDENCIES: Dict[str, Set[str]] = {
+    "setup":       set(),
+    "backend":     {"setup"},
+    "ci":          {"setup"},
+    "deploy":      {"setup"},
+    "frontend":    {"backend"},
+    "integration": {"setup", "backend", "frontend", "ci", "deploy"},
+    "security":    {"backend", "frontend"},
+    "coder":       {"setup"},
 }
 
 
@@ -46,32 +46,47 @@ class TaskNode:
     depends_on: Set[str] = field(default_factory=set)   # upstream task IDs
 
 
+def _task_lane(task) -> str:
+    if isinstance(task, dict):
+        agent = (task.get("agent") or "").strip().lower()
+        specialization = (task.get("specialization") or "").strip().lower()
+    else:
+        agent = (getattr(task, "agent", "") or "").strip().lower()
+        specialization = (getattr(task, "specialization", "") or "").strip().lower()
+
+    if agent == "builder":
+        return specialization or "coder"
+    if agent:
+        return agent
+    return "setup"
+
+
 def build_dependency_graph(tasks: list) -> List[TaskNode]:
     """Build a dependency graph from a list of task dicts or TaskState objects.
 
-    Each element must have ``id`` (or ``.id``) and ``agent`` (or ``.agent``)
+    Each element must have ``id`` (or ``.id``) and either ``specialization`` or
+    ``agent`` (or attribute equivalents).
     attributes/keys.  Returns an ordered list of ``TaskNode`` objects.
     """
     nodes: List[TaskNode] = []
-    last_by_agent: Dict[str, str] = {}          # agent → most-recent task ID
+    last_by_lane: Dict[str, str] = {}           # lane → most-recent task ID
 
     for task in tasks:
         tid = task["id"] if isinstance(task, dict) else task.id
-        agent = (task.get("agent", "coder") if isinstance(task, dict)
-                 else getattr(task, "agent", "coder")) or "coder"
+        agent = _task_lane(task)
         deps: Set[str] = set()
 
-        # Same-agent sequential ordering
-        if agent in last_by_agent:
-            deps.add(last_by_agent[agent])
+        # Same-lane sequential ordering
+        if agent in last_by_lane:
+            deps.add(last_by_lane[agent])
 
-        # Cross-agent dependencies
-        for dep_agent in AGENT_DEPENDENCIES.get(agent, set()):
-            if dep_agent in last_by_agent:
-                deps.add(last_by_agent[dep_agent])
+        # Cross-lane dependencies
+        for dep_agent in TASK_DEPENDENCIES.get(agent, set()):
+            if dep_agent in last_by_lane:
+                deps.add(last_by_lane[dep_agent])
 
         nodes.append(TaskNode(task_id=tid, agent=agent, depends_on=deps))
-        last_by_agent[agent] = tid
+        last_by_lane[agent] = tid
 
     return nodes
 

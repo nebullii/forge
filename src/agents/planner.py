@@ -6,9 +6,7 @@ from pathlib import Path
 
 from .base import BaseAgent
 
-# ── ADK agent factory ─────────────────────────────────────────────────────────
-
-ADK_INSTRUCTION = """\
+ROLE_INSTRUCTION = """\
 You are Forge Planner, a senior software architect. Your job is to read a project
 spec and choose the best possible technology stack for it — then break the build
 into an ordered task list.
@@ -165,46 +163,42 @@ decisions:
     frontend: "..."        # "none" for API-only or CLI
     styling: "..."         # "none" for API-only or CLI
   architecture: "One sentence describing how the components connect."
-  reasoning: "2-3 sentences explaining WHY this stack fits this specific project."
+  reasoning: "2-3 sentences. Include complexity level (1-4) and WHY this stack fits."
+  directory_structure: |
+    (write the FULL directory tree here — adapted to your chosen stack)
+
+DIRECTORY STRUCTURE IS MANDATORY. Every downstream agent reads it to know where to
+put files. Use the conventions of the framework you chose:
+
+  Plain HTML:       index.html (and that's it)
+  FastAPI + React:  backend/main.py, backend/requirements.txt, frontend/package.json, frontend/src/
+  Django:           manage.py, app_name/models.py, app_name/views.py, templates/, static/, requirements.txt
+  Rails:            Gemfile, config/routes.rb, app/models/, app/controllers/, app/views/, db/migrate/
+  Express + React:  server/index.js, server/package.json, client/package.json, client/src/
+  Go + HTMX:        main.go, go.mod, templates/, static/
+  Flask + templates: app.py, templates/, static/, requirements.txt
+  CLI (Python):     cli.py, setup.py or pyproject.toml
+  CLI (Go):         main.go, go.mod
+
+CRITICAL: All tasks MUST use paths consistent with this structure. Do NOT let one
+task write backend/main.py while another writes main.py at root. Pick ONE layout.
 
 tasks:
   - id: task_01
     name: "Set up project structure and dependencies"
     description: "Create the project skeleton with package manifests and config files"
-    agent: coder
-    files: [Gemfile, config/database.yml]
+    agent: builder
+    specialization: setup
+    files: [list files matching your directory_structure]
   - id: task_02
     name: "..."
     description: "..."
-    agent: coder
+    agent: builder
+    specialization: backend | frontend | ci | deploy | integration
     files: [...]
 
 Output ONLY the YAML, nothing else.
 """
-
-
-def create_planner_agent(llm):
-    """Create a Google ADK LlmAgent for the Planner role.
-
-    Args:
-        llm: A google.adk BaseLlm instance (e.g. from create_forge_llm())
-
-    Returns:
-        google.adk.agents.LlmAgent
-    """
-    try:
-        from google.adk.agents import LlmAgent
-    except ImportError:
-        raise ImportError("google-adk required. Install: pip install 'forge-ai[adk]'")
-
-    return LlmAgent(
-        name="forge-planner",
-        description="Analyzes project specs and produces a structured build plan with tech stack decisions.",
-        model=llm,
-        instruction=ADK_INSTRUCTION,
-    )
-
-
 class PlannerAgent(BaseAgent):
     name = "planner"
     skill_description = (
@@ -259,12 +253,14 @@ tasks:
   - id: task_01
     name: "Task name"
     description: "Detailed description of what to do"
-    agent: coder
+    agent: builder
+    specialization: integration
     files: [files this task touches]
   - id: task_02
     name: "..."
     description: "..."
-    agent: coder
+    agent: builder
+    specialization: integration
     files: [...]
 
 Output ONLY the YAML, nothing else."""
@@ -375,6 +371,8 @@ PLAN STRUCTURE:
 - Order by dependency (models before routes, backend before frontend)
 - First task: project setup (manifest, config, folder structure)
 - Last task: integration / wiring everything together
+- Use `agent: builder` for implementation work and `specialization` to label
+  the slice: setup, backend, frontend, ci, deploy, or integration.
 
 Output the plan as YAML — no markdown fences:
 
@@ -386,58 +384,30 @@ decisions:
     frontend: "..."        # "none" for API-only or CLI
     styling: "..."         # "none" for API-only or CLI
   architecture: "One sentence: how do the components connect?"
-  reasoning: "2-3 sentences: why does this stack fit THIS project specifically?"
+  reasoning: "2-3 sentences. Include complexity level (1-4) and why this stack fits."
+  directory_structure: |
+    (write the FULL directory tree adapted to your chosen stack — see examples above)
+
+DIRECTORY STRUCTURE IS MANDATORY. All tasks MUST use paths consistent with it.
 
 tasks:
   - id: task_01
     name: "Set up project structure and dependencies"
-    description: "Create the project skeleton with package manifests and config files"
-    agent: coder
-    files: [Gemfile, config/database.yml]
+    description: "Create the project skeleton"
+    agent: builder
+    specialization: setup
+    files: [paths matching your directory_structure]
   - id: task_02
     name: "..."
     description: "..."
-    agent: coder
+    agent: builder
+    specialization: backend | frontend | ci | deploy | integration
     files: [...]
 
 Output ONLY the YAML, nothing else."""
 
-    def handle_a2a_task(self, task):
-        """A2A entry point: produces a structured plan as a TaskResult."""
-        from ..a2a.types import TaskResult, TaskStatus, Artifact, TextPart
-
-        context = task.context or {}
-        prompt_parts = [p.text for p in task.message.parts if hasattr(p, "text")]
-        prompt_text = "\n".join(prompt_parts)
-
-        # Extract spec/rules from the prompt text or context
-        spec = context.get("spec", "")
-        rules = context.get("rules", "")
-        if not spec:
-            spec = prompt_text  # use the full prompt as spec
-
-        try:
-            plan = self.analyze_and_plan(spec, rules)
-            plan_text = f"Tasks: {len(plan.get('tasks', []))}\n"
-            for t in plan.get("tasks", []):
-                plan_text += f"  - {t.get('name', '')}\n"
-
-            return TaskResult(
-                id=task.id,
-                status=TaskStatus.completed,
-                artifacts=[
-                    Artifact(
-                        type="plan",
-                        name="build_plan",
-                        parts=[TextPart(text=plan_text)],
-                        data=plan,
-                    )
-                ],
-            )
-        except Exception as e:
-            return TaskResult(id=task.id, status=TaskStatus.failed, error=str(e))
-
-    _VALID_AGENTS = {"backend", "frontend", "coder", "ci", "deploy", "security"}
+    _TOP_LEVEL_AGENT = "builder"
+    _LEGACY_SPECIALIZATIONS = {"backend", "frontend", "coder", "ci", "deploy"}
 
     def _parse_plan(self, response: str) -> dict:
         """Parse and validate the YAML plan from the LLM response."""
@@ -467,7 +437,7 @@ Output ONLY the YAML, nothing else."""
         if not isinstance(plan["tasks"], list) or len(plan["tasks"]) == 0:
             raise ValueError("Planner returned an empty task list.")
 
-        # Validate each task and normalise unknown agent names
+        # Normalize planner output into the public four-layer workflow.
         for task in plan["tasks"]:
             if not isinstance(task, dict):
                 raise ValueError(f"Task is not a dict: {task!r}")
@@ -476,14 +446,26 @@ Output ONLY the YAML, nothing else."""
                     raise ValueError(
                         f"Task missing required field '{required_field}': {task}"
                     )
-            agent = task.get("agent", "coder")
-            if agent not in self._VALID_AGENTS:
-                import warnings
-                warnings.warn(
-                    f"Unknown agent '{agent}' in task '{task.get('id')}'; "
-                    f"falling back to 'coder'. Valid: {sorted(self._VALID_AGENTS)}",
-                    stacklevel=2,
-                )
-                task["agent"] = "coder"
+            agent = str(task.get("agent", self._TOP_LEVEL_AGENT)).strip().lower()
+            specialization = str(task.get("specialization", "")).strip().lower()
+
+            if agent == self._TOP_LEVEL_AGENT:
+                task["agent"] = self._TOP_LEVEL_AGENT
+                task["specialization"] = specialization or "coder"
+                continue
+
+            if agent in self._LEGACY_SPECIALIZATIONS:
+                task["agent"] = self._TOP_LEVEL_AGENT
+                task["specialization"] = specialization or agent
+                continue
+
+            import warnings
+            warnings.warn(
+                f"Unknown agent '{agent}' in task '{task.get('id')}'; "
+                "falling back to builder/coder.",
+                stacklevel=2,
+            )
+            task["agent"] = self._TOP_LEVEL_AGENT
+            task["specialization"] = specialization or "coder"
 
         return plan

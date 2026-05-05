@@ -2,9 +2,7 @@
 
 from .base import BaseAgent
 
-# ── ADK agent factory ─────────────────────────────────────────────────────────
-
-ADK_INSTRUCTION = """\
+ROLE_INSTRUCTION = """\
 You are Forge Deploy, a cloud deployment specialist.
 
 RULES:
@@ -29,30 +27,6 @@ Output every file using this exact format:
 
 Write COMPLETE files.
 """
-
-
-def create_deploy_agent(llm):
-    """Create a Google ADK LlmAgent for the Deploy role.
-
-    Args:
-        llm: A google.adk BaseLlm instance (e.g. from create_forge_llm())
-
-    Returns:
-        google.adk.agents.LlmAgent
-    """
-    try:
-        from google.adk.agents import LlmAgent
-    except ImportError:
-        raise ImportError("google-adk required. Install: pip install 'forge-ai[adk]'")
-
-    return LlmAgent(
-        name="forge-deploy",
-        description="Generates deployment configs for Railway, Render, Vercel, Fly.io.",
-        model=llm,
-        instruction=ADK_INSTRUCTION,
-    )
-
-
 class DeployAgent(BaseAgent):
     name = "deploy"
     skill_description = (
@@ -132,35 +106,3 @@ Use this format for each file:
 Match the tech stack and target platform. Include all required environment variables."""
 
         return self.invoke(prompt)
-
-    def handle_a2a_task(self, task):
-        """A2A entry point for deployment config generation."""
-        context = task.context or {}
-        spec = context.get("spec", "")
-        decisions = context.get("decisions", {})
-        deploy_template = context.get("deploy_template", "")
-        rules = context.get("rules", "")
-
-        prompt_parts = [p.text for p in task.message.parts if hasattr(p, "text")]
-        task_text = "\n".join(prompt_parts)
-
-        if spec or decisions:
-            response = self.generate_deploy(spec, decisions, deploy_template, rules)
-        else:
-            response = self.invoke(task_text)
-
-        files = self.extract_files(response)
-
-        from ..a2a.types import TaskResult, TaskStatus, Artifact, TextPart, FilePart
-
-        artifacts = [
-            Artifact(type="text", name="response", parts=[TextPart(text=response)])
-        ]
-        if files:
-            artifacts.append(Artifact(
-                type="files",
-                name="deploy_files",
-                parts=[FilePart(path=fp, content=c) for fp, c in files],
-            ))
-
-        return TaskResult(id=task.id, status=TaskStatus.completed, artifacts=artifacts)

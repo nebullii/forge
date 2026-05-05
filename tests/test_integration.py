@@ -3,6 +3,7 @@
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 
 import pytest
 
@@ -19,8 +20,30 @@ from src.collaboration import (
     UIDataDependency,
     extract_contracts_from_response,
 )
-from src.adk.tools import BuildContext
 from src.scheduler import build_dependency_graph, ParallelScheduler
+
+
+@dataclass
+class BuildContext:
+    bus: ArtifactBus = field(default_factory=ArtifactBus)
+    registry: ContractRegistry = field(default_factory=ContractRegistry)
+    decisions: dict = field(default_factory=dict)
+    tasks: list = field(default_factory=list)
+    aborted: bool = False
+    task_prompts: dict = field(default_factory=dict)
+    task_agents: dict = field(default_factory=dict)
+
+    @property
+    def files(self):
+        return self.bus.export_files_list()
+
+    @property
+    def errors(self):
+        return self.bus.get_errors()
+
+    @property
+    def review(self):
+        return self.bus.get_review()
 
 
 class TestBuildContextIntegration:

@@ -7,11 +7,15 @@ import pytest
 
 from src.collaboration.artifact_bus import ArtifactBus
 from src.collaboration.models import (
+    TaskPlanArtifact,
     CodeArtifact,
+    BuildOutputArtifact,
     DecisionArtifact,
     ReviewArtifact,
+    ReviewFindingArtifact,
     BuildLogArtifact,
     ReworkRequestArtifact,
+    VerificationArtifact,
 )
 
 
@@ -26,6 +30,13 @@ def bus():
 
 @pytest.fixture
 def populated_bus(bus):
+    bus.publish(TaskPlanArtifact(
+        task_id="t1",
+        name="Build backend",
+        description="Create API",
+        specialization="backend",
+        planned_files=("app.py",),
+    ))
     bus.publish(CodeArtifact(path="app.py", content="x=1", producer_agent="backend", task_id="t1"))
     bus.publish(CodeArtifact(path="ui.jsx", content="<App/>", producer_agent="frontend", task_id="t2"))
     bus.publish(DecisionArtifact(key="stack", value={"lang": "python"}, producer_agent="planner"))
@@ -72,8 +83,9 @@ class TestQuery:
 
     def test_by_task(self, populated_bus):
         arts = populated_bus.by_task("t1")
-        assert len(arts) == 1
-        assert arts[0].path == "app.py"
+        assert len(arts) == 2
+        assert any(isinstance(art, TaskPlanArtifact) for art in arts)
+        assert any(isinstance(art, CodeArtifact) and art.path == "app.py" for art in arts)
 
     def test_by_agent(self, populated_bus):
         arts = populated_bus.by_agent("ci")
@@ -87,7 +99,7 @@ class TestQuery:
 
     def test_snapshot_unfiltered(self, populated_bus):
         snap = populated_bus.snapshot()
-        assert len(snap) == 5
+        assert len(snap) == 6
 
     def test_snapshot_filtered(self, populated_bus):
         errors = populated_bus.snapshot(
@@ -134,6 +146,45 @@ class TestConvenience:
         rev = bus.get_review()
         assert rev["passed"] is False
         assert len(rev["issues"]) == 1
+
+    def test_get_task_plans(self, populated_bus):
+        plans = populated_bus.get_task_plans()
+        assert len(plans) == 1
+        assert plans[0].task_id == "t1"
+
+    def test_get_build_outputs(self, bus):
+        bus.publish(BuildOutputArtifact(
+            task_id="t1",
+            specialization="backend",
+            planned_files=("app.py",),
+            files_written=("app.py",),
+            contract_types=("api",),
+        ))
+        outputs = bus.get_build_outputs()
+        assert len(outputs) == 1
+        assert outputs[0].contract_types == ("api",)
+
+    def test_get_review_findings(self, bus):
+        bus.publish(ReviewFindingArtifact(
+            target_path="app.py",
+            message="bad",
+            severity="error",
+            producer_agent="reviewer",
+        ))
+        findings = bus.get_review_findings()
+        assert len(findings) == 1
+        assert findings[0].target_path == "app.py"
+
+    def test_get_verification_results(self, bus):
+        bus.publish(VerificationArtifact(
+            verifier="python_syntax",
+            category="syntax",
+            passed=True,
+            summary="ok",
+        ))
+        results = bus.get_verification_results()
+        assert len(results) == 1
+        assert results[0].verifier == "python_syntax"
 
     def test_summary(self, populated_bus):
         s = populated_bus.summary()

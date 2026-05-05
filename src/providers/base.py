@@ -14,9 +14,14 @@ class ProviderConfig:
     model: str = ""
     base_url: Optional[str] = None
     max_tokens: int = 8192
+    profile: str = ""
+    capabilities: tuple[str, ...] = ()
+    priority: int = 0
+    metadata: dict = field(default_factory=dict)
 
     def __str__(self):
-        return f"{self.name} ({self.model})"
+        profile = f"/{self.profile}" if self.profile else ""
+        return f"{self.name}{profile} ({self.model})"
 
 
 class BaseProvider(ABC):

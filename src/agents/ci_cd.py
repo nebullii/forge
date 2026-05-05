@@ -2,9 +2,7 @@
 
 from .base import BaseAgent
 
-# ── ADK agent factory ─────────────────────────────────────────────────────────
-
-ADK_INSTRUCTION = """\
+ROLE_INSTRUCTION = """\
 You are Forge CI, a DevOps engineer specializing in CI/CD pipelines
 and containerization. You keep things simple and practical.
 
@@ -36,37 +34,13 @@ Output every file using this exact format:
 
 Write COMPLETE files.
 """
-
-
-def create_ci_agent(llm):
-    """Create a Google ADK LlmAgent for the CI/CD role.
-
-    Args:
-        llm: A google.adk BaseLlm instance (e.g. from create_forge_llm())
-
-    Returns:
-        google.adk.agents.LlmAgent
-    """
-    try:
-        from google.adk.agents import LlmAgent
-    except ImportError:
-        raise ImportError("google-adk required. Install: pip install 'forge-ai[adk]'")
-
-    return LlmAgent(
-        name="forge-ci",
-        description="Generates CI/CD: GitHub Actions workflows, Dockerfile, docker-compose.",
-        model=llm,
-        instruction=ADK_INSTRUCTION,
-    )
-
-
 class CIAgent(BaseAgent):
     name = "ci"
     skill_description = (
         "Generates CI/CD configuration: GitHub Actions workflows, "
         "Dockerfile, docker-compose.yml, and build/test pipelines."
     )
-    role = ADK_INSTRUCTION
+    role = ROLE_INSTRUCTION
 
     def generate_ci(self, spec: str, decisions: dict, rules: str = "") -> str:
         """Generate CI/CD config files. Returns raw LLM response."""
@@ -101,34 +75,3 @@ Use this format for each file:
 Match the tech stack exactly. Include proper caching for dependencies."""
 
         return self.invoke(prompt)
-
-    def handle_a2a_task(self, task):
-        """A2A entry point for CI/CD generation."""
-        context = task.context or {}
-        spec = context.get("spec", "")
-        decisions = context.get("decisions", {})
-        rules = context.get("rules", "")
-
-        prompt_parts = [p.text for p in task.message.parts if hasattr(p, "text")]
-        task_text = "\n".join(prompt_parts)
-
-        if spec or decisions:
-            response = self.generate_ci(spec, decisions, rules)
-        else:
-            response = self.invoke(task_text)
-
-        files = self.extract_files(response)
-
-        from ..a2a.types import TaskResult, TaskStatus, Artifact, TextPart, FilePart
-
-        artifacts = [
-            Artifact(type="text", name="response", parts=[TextPart(text=response)])
-        ]
-        if files:
-            artifacts.append(Artifact(
-                type="files",
-                name="ci_files",
-                parts=[FilePart(path=fp, content=c) for fp, c in files],
-            ))
-
-        return TaskResult(id=task.id, status=TaskStatus.completed, artifacts=artifacts)

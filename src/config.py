@@ -30,6 +30,22 @@ providers:
   - name: ollama
     base_url: http://localhost:11434
     model: llama3.1
+    profiles:
+      fast_local:
+        model: llama3.1
+        capabilities: [cheap, code, local]
+      code_local:
+        model: qwen2.5-coder:14b
+        capabilities: [code, local, reasoning]
+      reason_local:
+        model: qwen3:32b
+        capabilities: [reasoning, large_context, local]
+
+model_routing:
+  planner: ollama:reason_local
+  builder: ollama:code_local
+  reviewer: ollama:reason_local
+  security: ollama:reason_local
 """
 
 
@@ -61,7 +77,7 @@ def ensure_config() -> dict:
 
 def get_provider_config(config: dict, provider_name: Optional[str] = None):
     """Resolve which provider to use. Returns a ProviderConfig."""
-    from .providers.base import ProviderConfig
+    from .router import _provider_config_from_dict
 
     providers = config.get("providers", [])
     if not providers:
@@ -71,9 +87,9 @@ def get_provider_config(config: dict, provider_name: Optional[str] = None):
         )
 
     if provider_name:
-        for p in providers:
-            if p["name"].lower() == provider_name.lower():
-                return ProviderConfig(**{k: v for k, v in p.items() if v})
+        resolved = _resolve_named_provider(providers, provider_name)
+        if resolved is not None:
+            return _provider_config_from_dict(resolved)
         raise ValueError(f"Provider '{provider_name}' not found in config.")
 
     # Find all providers with valid credentials
@@ -92,7 +108,7 @@ def get_provider_config(config: dict, provider_name: Optional[str] = None):
 
     # One valid provider — use it automatically
     if len(valid) == 1:
-        return ProviderConfig(**{k: v for k, v in valid[0].items() if v})
+        return _provider_config_from_dict(valid[0])
 
     # Multiple valid providers — ask the user to pick
     print("Multiple AI providers found:\n")
@@ -118,7 +134,27 @@ def get_provider_config(config: dict, provider_name: Optional[str] = None):
         sys.exit(0)
 
     chosen = valid[idx]
-    return ProviderConfig(**{k: v for k, v in chosen.items() if v})
+    return _provider_config_from_dict(chosen)
+
+
+def _resolve_named_provider(providers: list[dict], provider_name: str) -> Optional[dict]:
+    ref = provider_name.lower()
+    for provider in providers:
+        name = provider.get("name", "").lower()
+        if name == ref:
+            return provider
+
+        profiles = provider.get("profiles", {})
+        if isinstance(profiles, dict):
+            for profile_name, profile in profiles.items():
+                profile_ref = f"{name}:{profile_name}".lower()
+                if ref in {profile_ref, profile_name.lower(), f"{name}/{profile_name}".lower()}:
+                    merged = dict(provider)
+                    merged.update(profile or {})
+                    merged.pop("profiles", None)
+                    merged["profile"] = profile_name
+                    return merged
+    return None
 
 
 def _expand_env_vars(obj):

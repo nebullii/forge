@@ -199,6 +199,17 @@ class TestPersistence:
         loaded = ContractRegistry.load(bad)
         assert len(loaded) == 0
 
+    def test_export_openapi(self, populated_registry, tmp_path):
+        path = tmp_path / "openapi.json"
+        populated_registry.export_openapi(path, title="Test API", version="9.9.9")
+        data = json.loads(path.read_text())
+        assert data["openapi"] == "3.1.0"
+        assert data["info"]["title"] == "Test API"
+        assert data["info"]["version"] == "9.9.9"
+        assert "/users" in data["paths"]
+        assert "User" in data["components"]["schemas"]
+        assert "BearerAuth" in data["components"]["securitySchemes"]
+
 
 # ---------------------------------------------------------------------------
 # Contract extraction

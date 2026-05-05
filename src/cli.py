@@ -9,6 +9,8 @@ from pathlib import Path
 
 import yaml
 
+from .policy import write_default_policy
+
 
 FORGE_DIR = ".forge"
 TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
@@ -273,6 +275,11 @@ def cmd_new(args):
     policy_src = TEMPLATES_DIR / "common" / "firewall_policy.json"
     if policy_src.exists():
         shutil.copy(policy_src, forge_path / "firewall_policy.json")
+    governance_src = TEMPLATES_DIR / "common" / "policy.yaml"
+    if governance_src.exists():
+        shutil.copy(governance_src, forge_path / "policy.yaml")
+    else:
+        write_default_policy(forge_path / "policy.yaml")
 
     # Copy skill files
     skills_src = TEMPLATES_DIR / "common" / "skills"
@@ -287,6 +294,7 @@ def cmd_new(args):
     print(f"Created {project_name}/")
     print(f"  .forge/spec.md    ✓")
     print(f"  .forge/rules.md   ✓")
+    print(f"  .forge/policy.yaml ✓")
     if (forge_path / "deploy.md").exists():
         print(f"  .forge/deploy.md  ✓")
     if skills_src.exists():
@@ -412,8 +420,79 @@ def cmd_init(args):
             count += 1
         print(f"  .forge/skills/    ✓  ({count} skill files)")
 
+    governance_src = TEMPLATES_DIR / "common" / "policy.yaml"
+    if governance_src.exists():
+        shutil.copy(governance_src, forge_path / "policy.yaml")
+    else:
+        write_default_policy(forge_path / "policy.yaml")
+    print(f"  .forge/policy.yaml ✓")
+
     print("")
     print("Next: nano .forge/spec.md    # edit your project spec")
+
+
+def cmd_fix(args):
+    """Fix errors — user pastes an error, debug agent fixes the code."""
+    from .config import load_config, get_provider_config
+    from .providers import create_provider
+    from .agents.debug import DebugAgent
+
+    project_root = Path.cwd()
+
+    # Get the error text
+    error_text = getattr(args, 'error', None) or ""
+    if not error_text:
+        print("Paste the error/traceback below (empty line to finish):\n")
+        lines = []
+        try:
+            while True:
+                line = input()
+                if not line and lines:
+                    break
+                lines.append(line)
+        except (KeyboardInterrupt, EOFError):
+            pass
+        error_text = "\n".join(lines)
+
+    if not error_text.strip():
+        print("No error provided.")
+        return
+
+    # Load provider
+    try:
+        config = load_config()
+        provider_config = get_provider_config(config)
+        provider = create_provider(provider_config)
+    except (ValueError, Exception) as e:
+        print(f"Error: {e}")
+        print("Run 'forge setup' to configure an API key.")
+        return
+
+    print(f"\nDebug agent analyzing error... ({provider_config})\n")
+
+    agent = DebugAgent(provider, project_root)
+    try:
+        fixes = agent.diagnose_and_fix(error_text, project_root)
+    except Exception as e:
+        print(f"Debug agent failed: {e}")
+        return
+
+    if not fixes:
+        print("Debug agent couldn't produce a fix.")
+        return
+
+    for filepath, content in fixes:
+        full_path = (project_root / filepath).resolve()
+        try:
+            full_path.relative_to(project_root.resolve())
+        except ValueError:
+            print(f"  Skipping {filepath} (outside project root)")
+            continue
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_text(content)
+        print(f"  Fixed: {filepath}")
+
+    print(f"\n{len(fixes)} file(s) fixed. Restart your server to test.")
 
 
 def cmd_dev(args):
@@ -633,14 +712,11 @@ def cmd_build(args):
     feature = getattr(args, 'feature', None)
     no_review = getattr(args, 'no_review', False)
     verbose = getattr(args, 'verbose', False)
-    use_adk = getattr(args, 'adk', False)
+    approval_mode = getattr(args, 'approval_mode', None)
 
     ui = BuildUI(verbose=verbose)
 
-    if use_adk:
-        print(f"Building with {provider_config} [ADK multi-agent mode]...")
-    else:
-        print(f"Building with {provider_config}...")
+    print(f"Building with {provider_config}...")
     print("")
 
     orchestrator = BuildOrchestrator(
@@ -648,7 +724,8 @@ def cmd_build(args):
         forge_path=forge_path,
         review=not no_review,
         verbose=verbose,
-        use_adk=use_adk,
+        approval_mode=approval_mode,
+        config_dict=config,
         ui=ui,
     )
 
@@ -660,6 +737,41 @@ def cmd_build(args):
     except Exception as e:
         print(f"Build failed: {e}")
         sys.exit(1)
+
+
+def cmd_contracts(args):
+    """Export persisted contracts in various formats."""
+    forge_path = Path(FORGE_DIR)
+    contracts_path = forge_path / "contracts.json"
+    if not contracts_path.exists():
+        print("No persisted contracts found. Run 'forge build' first.")
+        sys.exit(1)
+
+    from .collaboration import ContractRegistry
+
+    registry = ContractRegistry.load(contracts_path)
+    contracts_cmd = getattr(args, "contracts_cmd", "export")
+    if contracts_cmd != "export":
+        print("Usage: forge contracts export")
+        sys.exit(1)
+
+    output_format = getattr(args, "format", "openapi")
+    output = Path(getattr(args, "output", ""))
+
+    if output_format == "openapi":
+        target = output or (forge_path / "openapi.json")
+        registry.export_openapi(target)
+        print(f"Exported OpenAPI spec to {target}")
+        return
+
+    if output_format == "json":
+        target = output or (forge_path / "contracts-export.json")
+        target.write_text(registry.format_as_json() + "\n")
+        print(f"Exported contracts to {target}")
+        return
+
+    print(f"Unsupported format: {output_format}")
+    sys.exit(1)
 
 
 
@@ -783,6 +895,11 @@ def main():
     dev_parser.add_argument("--no-fix", action="store_true", help="Disable auto-fix on crash")
     dev_parser.set_defaults(func=cmd_dev)
 
+    # forge fix
+    fix_parser = subparsers.add_parser("fix", help="Fix errors — paste an error message and the debug agent fixes it")
+    fix_parser.add_argument("error", nargs="?", help="Error message (or omit to paste interactively)")
+    fix_parser.set_defaults(func=cmd_fix)
+
     # forge sprint
     sprint_parser = subparsers.add_parser("sprint", help="Sprint timer")
     sprint_parser.add_argument("sprint_cmd", choices=["start", "status", "wrap"], help="Sprint command")
@@ -798,8 +915,8 @@ def main():
     build_parser.add_argument("--feature", "-f", help="Add a specific feature (incremental build)")
     build_parser.add_argument("--no-review", action="store_true", help="Skip review phase")
     build_parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
-    build_parser.add_argument("--adk", action="store_true",
-                              help="Use ADK multi-agent pipeline (Backend, Frontend, Security, CI, Deploy)")
+    build_parser.add_argument("--approval-mode", choices=["off", "interactive"],
+                              help="Override .forge/policy.yaml approval mode for this build")
     build_parser.set_defaults(func=cmd_build)
 
     # forge setup
@@ -816,6 +933,15 @@ def main():
     # forge status
     status_parser = subparsers.add_parser("status", help="Show build status")
     status_parser.set_defaults(func=cmd_status)
+
+    # forge contracts
+    contracts_parser = subparsers.add_parser("contracts", help="Export persisted contracts")
+    contracts_subparsers = contracts_parser.add_subparsers(dest="contracts_cmd", required=True)
+    contracts_export_parser = contracts_subparsers.add_parser("export", help="Export contracts to OpenAPI or JSON")
+    contracts_export_parser.add_argument("--format", choices=["openapi", "json"], default="openapi",
+                                         help="Export format")
+    contracts_export_parser.add_argument("--output", "-o", help="Output path")
+    contracts_export_parser.set_defaults(func=cmd_contracts)
 
     args = parser.parse_args()
     args.func(args)

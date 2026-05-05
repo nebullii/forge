@@ -14,11 +14,15 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 
 from .models import (
     Artifact,
+    TaskPlanArtifact,
     CodeArtifact,
+    BuildOutputArtifact,
     DecisionArtifact,
     ReviewArtifact,
+    ReviewFindingArtifact,
     ContractArtifact,
     BuildLogArtifact,
+    VerificationArtifact,
 )
 
 
@@ -164,6 +168,26 @@ class ArtifactBus:
                 "passed": last.passed,
                 "issues": list(last.issues),
             }
+
+    def get_task_plans(self) -> List[TaskPlanArtifact]:
+        """Return all planned task manifests in publication order."""
+        with self._lock:
+            return list(self._by_type.get(TaskPlanArtifact, []))
+
+    def get_build_outputs(self) -> List[BuildOutputArtifact]:
+        """Return all structured builder task outputs."""
+        with self._lock:
+            return list(self._by_type.get(BuildOutputArtifact, []))
+
+    def get_review_findings(self) -> List[ReviewFindingArtifact]:
+        """Return all structured review findings."""
+        with self._lock:
+            return list(self._by_type.get(ReviewFindingArtifact, []))
+
+    def get_verification_results(self) -> List[VerificationArtifact]:
+        """Return all verification result artifacts."""
+        with self._lock:
+            return list(self._by_type.get(VerificationArtifact, []))
 
     # ------------------------------------------------------------------
     # Metadata

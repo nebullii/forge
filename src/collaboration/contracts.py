@@ -15,6 +15,7 @@ import json
 import re
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 
@@ -262,6 +263,95 @@ class ContractRegistry:
             }
         path.write_text(json.dumps(data, indent=2))
 
+    def to_openapi_dict(
+        self,
+        title: str = "Forge Generated API",
+        version: str = "1.0.0",
+    ) -> Dict[str, Any]:
+        """Export API and model contracts as a minimal OpenAPI 3.1 document."""
+        with self._lock:
+            doc: Dict[str, Any] = {
+                "openapi": "3.1.0",
+                "info": {"title": title, "version": version},
+                "paths": {},
+                "components": {"schemas": {}, "securitySchemes": {}},
+            }
+
+            for model in self._models:
+                doc["components"]["schemas"][model.name] = {
+                    "type": "object",
+                    "properties": {
+                        name: _field_type_to_schema(field_type)
+                        for name, field_type in model.fields.items()
+                    },
+                }
+
+            for endpoint in self._api:
+                path_item = doc["paths"].setdefault(endpoint.path, {})
+                operation: Dict[str, Any] = {
+                    "operationId": _operation_id(endpoint.method, endpoint.path),
+                    "responses": {
+                        _success_status(endpoint.method): {
+                            "description": "Successful response",
+                            "content": {
+                                "application/json": {
+                                    "schema": _json_schema(endpoint.response_schema)
+                                }
+                            },
+                        }
+                    },
+                }
+                if endpoint.request_schema:
+                    operation["requestBody"] = {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": _json_schema(endpoint.request_schema)
+                            }
+                        },
+                    }
+
+                if endpoint.auth == "jwt":
+                    doc["components"]["securitySchemes"]["BearerAuth"] = {
+                        "type": "http",
+                        "scheme": "bearer",
+                    }
+                    operation["security"] = [{"BearerAuth": []}]
+                elif endpoint.auth == "api_key":
+                    doc["components"]["securitySchemes"]["ApiKeyAuth"] = {
+                        "type": "apiKey",
+                        "in": "header",
+                        "name": "X-API-Key",
+                    }
+                    operation["security"] = [{"ApiKeyAuth": []}]
+                elif endpoint.auth == "session":
+                    doc["components"]["securitySchemes"]["SessionCookie"] = {
+                        "type": "apiKey",
+                        "in": "cookie",
+                        "name": "session",
+                    }
+                    operation["security"] = [{"SessionCookie": []}]
+
+                path_item[endpoint.method.lower()] = operation
+
+            if not doc["components"]["schemas"]:
+                doc["components"].pop("schemas", None)
+            if not doc["components"]["securitySchemes"]:
+                doc["components"].pop("securitySchemes", None)
+            if not doc["components"]:
+                doc.pop("components", None)
+
+            return doc
+
+    def export_openapi(
+        self,
+        path: "Path",
+        title: str = "Forge Generated API",
+        version: str = "1.0.0",
+    ) -> None:
+        path = Path(path)
+        path.write_text(json.dumps(self.to_openapi_dict(title=title, version=version), indent=2) + "\n")
+
     @classmethod
     def load(cls, path: "Path") -> "ContractRegistry":
         """Load contracts from a JSON file. Returns empty registry if missing."""
@@ -457,3 +547,53 @@ def _extract_class_fields(source: str, start_pos: int) -> Dict[str, str]:
             continue
         fields[fname] = ftype
     return fields
+
+
+def _field_type_to_schema(field_type: Any) -> Dict[str, Any]:
+    field = str(field_type).strip().lower()
+    if field in {"int", "integer"}:
+        return {"type": "integer"}
+    if field in {"float", "double", "number", "decimal"}:
+        return {"type": "number"}
+    if field in {"bool", "boolean"}:
+        return {"type": "boolean"}
+    if field in {"list", "array"}:
+        return {"type": "array", "items": {}}
+    if field in {"dict", "object", "map"}:
+        return {"type": "object"}
+    return {"type": "string"}
+
+
+def _json_schema(data: Dict[str, Any]) -> Dict[str, Any]:
+    if not data:
+        return {"type": "object"}
+    if "type" in data:
+        schema = dict(data)
+        if schema.get("items") and isinstance(schema["items"], str):
+            schema["items"] = {"$ref": f"#/components/schemas/{schema['items']}"}
+        return schema
+    return {
+        "type": "object",
+        "properties": {
+            key: (
+                {"$ref": f"#/components/schemas/{value}"}
+                if isinstance(value, str) and value[:1].isupper()
+                else _field_type_to_schema(value)
+            )
+            for key, value in data.items()
+        },
+    }
+
+
+def _success_status(method: str) -> str:
+    method = method.upper()
+    if method == "POST":
+        return "201"
+    if method == "DELETE":
+        return "204"
+    return "200"
+
+
+def _operation_id(method: str, path: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9]+", "_", path).strip("_")
+    return f"{method.lower()}_{cleaned or 'root'}"

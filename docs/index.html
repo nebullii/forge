@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Forge — Spec-driven multi-agent code generation</title>
+  <title>Forge — Spec-driven software generation</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -345,11 +345,12 @@
 <div class="hero">
   <div class="hero-left">
     <p class="hero-eyebrow">Open source &middot; MIT license</p>
-    <h1>Spec-driven code generation with <b>multi-agent orchestration</b></h1>
+    <h1>Spec-driven code generation with a <b>deterministic control plane</b></h1>
     <p class="hero-desc">
       Write a markdown spec. Run <code style="font-family:var(--mono);font-size:13px;color:var(--text);">forge build</code>.
-      Specialized agents collaborate through structured API contracts, run in
-      parallel, and self-correct when the reviewer finds issues.
+      Forge plans the build, runs builder specializations where they are safe to
+      parallelize, persists machine-readable artifacts, and ends with review plus
+      deterministic verification.
     </p>
     <div class="hero-actions">
       <a class="btn btn-primary" href="#how-it-works">Get started</a>
@@ -357,8 +358,8 @@
     </div>
     <div class="hero-stats">
       <div>
-        <div class="stat-val">8</div>
-        <div class="stat-label">Specialized agents</div>
+        <div class="stat-val">4</div>
+        <div class="stat-label">Workflow layers</div>
       </div>
       <div>
         <div class="stat-val">8</div>
@@ -387,15 +388,8 @@
       <div class="t-out">&nbsp;&nbsp;&nbsp; task_04 &nbsp;React frontend with auth flow</div>
       <div class="t-out">&nbsp;&nbsp;&nbsp; task_05 &nbsp;GitHub Actions + Dockerfile</div>
       <br>
-      <div class="t-ph">Phase 1b: Project Manager</div>
-      <div class="t-out">&nbsp;&nbsp;&nbsp; task_01 &nbsp;Set up project structure &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-ag">→ coder</span></div>
-      <div class="t-out">&nbsp;&nbsp;&nbsp; task_02 &nbsp;User authentication API &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-ag">→ backend</span></div>
-      <div class="t-out">&nbsp;&nbsp;&nbsp; task_03 &nbsp;Dashboard + data endpoints &nbsp;&nbsp;&nbsp;&nbsp; <span class="t-ag">→ backend</span></div>
-      <div class="t-out">&nbsp;&nbsp;&nbsp; task_04 &nbsp;React frontend with auth flow &nbsp; <span class="t-ag">→ frontend</span></div>
-      <div class="t-out">&nbsp;&nbsp;&nbsp; task_05 &nbsp;GitHub Actions + Dockerfile &nbsp;&nbsp;&nbsp; <span class="t-ag">→ ci</span></div>
-      <br>
       <div class="t-ph">Phase 2: Building</div>
-      <div class="t-out">&nbsp; Parallel scheduler: 5 tasks across {coder, backend, ci, frontend}</div>
+      <div class="t-out">&nbsp; Builder lanes: {setup, backend, frontend, ci, integration}</div>
       <br>
       <div class="t-out">&nbsp; [1/5] Set up project structure</div>
       <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-file">+ requirements.txt</span></div>
@@ -416,11 +410,15 @@
       <div class="t-ph">Phase 3: Review</div>
       <div class="t-out">&nbsp; Contract validation: 1 issue</div>
       <div class="t-out">&nbsp;&nbsp;&nbsp; POST /auth/login has no auth configured</div>
-      <div class="t-out">&nbsp; Reworking src/auth.py <span class="t-ag">→ backend</span></div>
-      <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-file">~ src/auth.py (fixed by backend)</span></div>
+      <div class="t-out">&nbsp; Reworking src/auth.py <span class="t-ag">→ builder/backend</span></div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-file">~ src/auth.py (fixed by builder/backend)</span></div>
       <div class="t-out">&nbsp; Review passed.</div>
       <br>
-      <div class="t-ok">Build complete. 11 files written. Contracts saved.</div>
+      <div class="t-ph">Phase 4: Verification</div>
+      <div class="t-out">&nbsp; python_syntax: passed</div>
+      <div class="t-out">&nbsp; contract_consistency: passed</div>
+      <br>
+      <div class="t-ok">Build complete. 11 files written. Artifacts and contracts saved.</div>
     </div>
   </div>
 </div>
@@ -456,7 +454,7 @@
           <div class="step-n">03</div>
           <div>
             <h3>Build</h3>
-            <p>Run <code style="font-family:var(--mono);font-size:11px;background:var(--raised);border:1px solid var(--border);padding:1px 4px;border-radius:3px;">forge build</code>. The pipeline plans, assigns agents, writes files, and runs a review pass with auto-fix.</p>
+            <p>Run <code style="font-family:var(--mono);font-size:11px;background:var(--raised);border:1px solid var(--border);padding:1px 4px;border-radius:3px;">forge build</code>. The pipeline plans, builds through specialization lanes, writes files, runs review, and finishes with deterministic verification.</p>
           </div>
         </div>
       </div>
@@ -492,9 +490,9 @@ No notifications.
       </div>
 
       <div class="code" style="margin-top:16px;">
-<span class="ps">$</span> forge build           <span class="cm"># classic pipeline</span>
-<span class="ps">$</span> forge build --adk     <span class="cm"># 7-agent parallel mode</span>
-<span class="ps">$</span> forge dev             <span class="cm"># run locally</span>
+<span class="ps">$</span> forge build                         <span class="cm"># planner → builder → reviewer → verifier</span>
+<span class="ps">$</span> forge build --feature "add JWT refresh tokens"
+<span class="ps">$</span> forge dev                           <span class="cm"># run locally</span>
       </div>
     </div>
 
@@ -510,31 +508,29 @@ No notifications.
 
     <div>
       <p class="label">Agent pipeline</p>
-      <h2>Agents collaborate, not just execute</h2>
-      <p class="desc">Agents share structured API contracts and full code through a thread-safe artifact bus. The reviewer sends fixes back to the specialist that wrote the file.</p>
+      <h2>Four layers, one workflow</h2>
+      <p class="desc">Forge passes machine-readable artifacts between planning, building, review, and verification. The control plane stays small, while builder specializations handle the implementation slices.</p>
 
       <div class="pipe">
-        <div class="pipe-row"><span class="pn">1</span><span class="pname">Planner</span><span class="pdesc">&ensp;spec → task list + tech decisions</span></div>
-        <div class="pipe-row"><span class="pn">2</span><span class="pname">Project Manager</span><span class="pdesc">&ensp;assigns agents, writes per-task prompts</span></div>
+        <div class="pipe-row"><span class="pn">1</span><span class="pname">Planner</span><span class="pdesc">&ensp;spec → stack decisions + task plan</span></div>
         <div class="pipe-row">
-          <span class="pn">3</span>
+          <span class="pn">2</span>
           <div>
-            <span class="pname">Backend</span> <span class="pdesc">+</span> <span class="pname">CI</span> <span class="pdesc">+</span> <span class="pname">Deploy</span><span class="ptag">parallel</span>
+            <span class="pname">Builder</span><span class="ptag">specialized</span>
             <div class="pbranch">
-              <div class="pipe-row"><span class="pname">Backend&ensp;</span><span class="pdesc">API routes, DB models → publishes contracts</span></div>
-              <div class="pipe-row"><span class="pname">CI&emsp;&emsp;&emsp;</span><span class="pdesc">GitHub Actions, Dockerfile</span></div>
-              <div class="pipe-row"><span class="pname">Deploy&ensp;&ensp;</span><span class="pdesc">Railway / Render / Vercel configs</span></div>
+              <div class="pipe-row"><span class="pname">setup&ensp;&ensp;&ensp;</span><span class="pdesc">project structure, manifests, base files</span></div>
+              <div class="pipe-row"><span class="pname">backend&ensp;</span><span class="pdesc">API routes, data layer, contracts</span></div>
+              <div class="pipe-row"><span class="pname">frontend</span><span class="pdesc">contract-aware UI generation</span></div>
+              <div class="pipe-row"><span class="pname">ci/deploy</span><span class="pdesc">GitHub Actions, Dockerfile, platform config</span></div>
             </div>
           </div>
         </div>
-        <div class="pipe-row"><span class="pn">4</span><span class="pname">Frontend</span><span class="pdesc">&ensp;reads contracts → generates matching UI</span></div>
-        <div class="pipe-row"><span class="pn">5</span><span class="pname">Security</span><span class="pdesc">&ensp;reads all code from bus, audits OWASP</span></div>
-        <div class="pipe-row"><span class="pn">6</span><span class="pname">Reviewer</span><span class="pdesc">&ensp;contract validation, cross-file review</span></div>
-        <div class="pipe-row"><span class="pn">7</span><span class="pname">Rework</span><span class="pdesc">&ensp;fixes route back to original agent</span><span class="ptag">new</span></div>
+        <div class="pipe-row"><span class="pn">3</span><span class="pname">Reviewer</span><span class="pdesc">&ensp;cross-file review + rework requests</span></div>
+        <div class="pipe-row"><span class="pn">4</span><span class="pname">Verifier</span><span class="pdesc">&ensp;deterministic checks + machine-readable pass/fail</span></div>
       </div>
 
       <div class="tip" style="margin-top:20px;">
-        <b>ArtifactBus + ContractRegistry</b> — agents publish typed artifacts (code, decisions, contracts) to a shared thread-safe store. The frontend gets exact endpoint shapes. Security reads real code, not filenames. Contracts persist across incremental builds.
+        <b>ArtifactBus + ArtifactStore + ContractRegistry</b> — Forge persists typed artifacts (task plans, build outputs, review findings, verification results) to a shared thread-safe store and durable `.forge/` snapshots. Frontend reads exact endpoint shapes from backend contracts.
       </div>
       <div class="tip" style="margin-top:10px;">
         <b>Agentic Firewall</b> — every write is validated before touching disk. Agents cannot write outside the project root, touch <code style="font-family:var(--mono);font-size:11px;">.env</code>, or embed <code style="font-family:var(--mono);font-size:11px;">eval()</code>. All decisions are logged.
@@ -548,36 +544,20 @@ No notifications.
         </thead>
         <tbody>
           <tr>
-            <td><span class="aname">project-manager</span><span class="anew">new</span></td>
-            <td>Takes the planner's task list and writes a precise, self-contained prompt for each agent — with stack context, files to generate, and API contracts.</td>
-          </tr>
-          <tr>
             <td><span class="aname">planner</span></td>
-            <td>Reads spec and rules, decides tech stack, breaks the project into 3–8 ordered tasks. Avoids ORMs and TypeScript unless explicitly requested.</td>
+            <td>Reads spec and rules, decides tech stack, and emits ordered builder tasks plus stack decisions.</td>
           </tr>
           <tr>
-            <td><span class="aname">backend</span></td>
-            <td>Generates FastAPI routes, SQLite models (raw SQL), Pydantic schemas, service layer. Publishes structured API contracts (endpoints, schemas, auth) to the ContractRegistry.</td>
-          </tr>
-          <tr>
-            <td><span class="aname">frontend</span></td>
-            <td>Reads structured contracts from the registry + backend code from the ArtifactBus. Generates React + Vite pages that match backend endpoints exactly.</td>
-          </tr>
-          <tr>
-            <td><span class="aname">security</span></td>
-            <td>Reads all code from the ArtifactBus (not just filenames). Audits against OWASP Top 10, checks auth coverage via contracts. Patches files in place.</td>
-          </tr>
-          <tr>
-            <td><span class="aname">ci</span></td>
-            <td>Generates GitHub Actions workflows, Dockerfile, and docker-compose based on the project's stack.</td>
-          </tr>
-          <tr>
-            <td><span class="aname">deploy</span></td>
-            <td>Generates Railway, Render, Vercel, or Fly.io configuration from stack decisions.</td>
+            <td><span class="aname">builder</span></td>
+            <td>Owns implementation through specializations like <code style="font-family:var(--mono);font-size:11px;">setup</code>, <code style="font-family:var(--mono);font-size:11px;">backend</code>, <code style="font-family:var(--mono);font-size:11px;">frontend</code>, <code style="font-family:var(--mono);font-size:11px;">ci</code>, <code style="font-family:var(--mono);font-size:11px;">deploy</code>, and <code style="font-family:var(--mono);font-size:11px;">integration</code>.</td>
           </tr>
           <tr>
             <td><span class="aname">reviewer</span></td>
-            <td>Reads all code from the bus. Runs automated contract validation (frontend vs backend). Routes fixes back to the original specialist agent — not a generic coder. One retry per file.</td>
+            <td>Reads all code from the bus, validates cross-file consistency, and emits structured findings plus rework requests.</td>
+          </tr>
+          <tr>
+            <td><span class="aname">verifier</span></td>
+            <td>Runs deterministic post-review checks and produces machine-readable verification results for the orchestrator and policy layer.</td>
           </tr>
         </tbody>
       </table>
@@ -634,14 +614,14 @@ No notifications.
           <div class="step-n" style="padding-top:2px; color:var(--dim);">—</div>
           <div>
             <h3>Parallel execution</h3>
-            <p>Independent agents (backend, CI, deploy) run concurrently via a dependency-aware scheduler. Both classic and ADK modes.</p>
+            <p>Independent builder lanes like <code style="font-family:var(--mono);font-size:11px;">backend</code>, <code style="font-family:var(--mono);font-size:11px;">ci</code>, and <code style="font-family:var(--mono);font-size:11px;">deploy</code> run concurrently through a dependency-aware scheduler.</p>
           </div>
         </div>
         <div class="step" style="padding:18px 0;">
           <div class="step-n" style="padding-top:2px; color:var(--dim);">—</div>
           <div>
             <h3>Self-correcting review</h3>
-            <p>Reviewer finds a bug in your backend? The fix goes to the backend agent — not a generic coder. One retry per file, tracked for observability.</p>
+            <p>Reviewer finds a bug in your backend? The rework goes back to the builder with the right specialization and affected files. One retry per file, tracked for observability.</p>
           </div>
         </div>
         <div class="step" style="padding:18px 0;">
@@ -664,8 +644,8 @@ No notifications.
         <div class="step" style="padding:18px 0; border-bottom:none;">
           <div class="step-n" style="padding-top:2px; color:var(--dim);">—</div>
           <div>
-            <h3>Resumable + distributed</h3>
-            <p>State saved after every task. <code style="font-family:var(--mono);font-size:11px;background:var(--raised);border:1px solid var(--border);padding:1px 4px;border-radius:3px;">forge agents start</code> exposes each agent as an HTTP A2A server on ports 8101–8108.</p>
+            <h3>Resumable + auditable</h3>
+            <p>State, artifacts, contracts, and verification output are persisted under <code style="font-family:var(--mono);font-size:11px;background:var(--raised);border:1px solid var(--border);padding:1px 4px;border-radius:3px;">.forge/</code> so builds can be resumed and inspected.</p>
           </div>
         </div>
       </div>
@@ -682,7 +662,7 @@ No notifications.
   <div class="cta-inner">
     <div class="cta-text">
       <h2>Get started in under a minute</h2>
-      <p>Core install needs only <code style="font-family:var(--mono);font-size:12px;">pyyaml</code>. LLM providers and ADK mode are optional extras.</p>
+      <p>Core install stays lightweight. Provider SDKs remain opt-in, and the workflow is the same whether you use Anthropic, OpenAI-compatible endpoints, or local Ollama.</p>
     </div>
     <div class="cta-actions">
       <a class="btn btn-primary" href="https://github.com/nebullii/forge" target="_blank">View on GitHub</a>
@@ -692,8 +672,8 @@ No notifications.
 
   <div style="max-width:var(--max); margin:0 auto; padding:0 var(--gutter) 64px;">
     <div class="code">
-<span class="ps">$</span> pip install forge-ai                  <span class="cm"># classic mode</span>
-<span class="ps">$</span> pip install "forge-ai[adk]"           <span class="cm"># + 7-agent parallel mode</span>
+<span class="ps">$</span> pip install forge-ai
+<span class="ps">$</span> pip install "forge-ai[build]"         <span class="cm"># provider SDK extras</span>
 
 <span class="ps">$</span> export ANTHROPIC_API_KEY=sk-ant-...   <span class="cm"># or OPENAI_API_KEY, TOGETHER_API_KEY, GROQ_API_KEY</span>
 

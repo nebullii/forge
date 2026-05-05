@@ -1,13 +1,8 @@
 """Frontend agent -- generates UI components, pages, routing, and state management."""
 
-from pathlib import Path
-
 from .base import BaseAgent
-from ..providers.base import BaseProvider
 
-# ── ADK agent factory ─────────────────────────────────────────────────────────
-
-ADK_INSTRUCTION = """\
+ROLE_INSTRUCTION = """\
 You are Forge Frontend, an expert frontend engineer. You build user interfaces
 using WHATEVER framework the project decisions specify.
 
@@ -62,37 +57,13 @@ Output every file using this exact format:
 
 Write COMPLETE files. Match backend API contracts exactly.
 """
-
-
-def create_frontend_agent(llm):
-    """Create a Google ADK LlmAgent for the Frontend role.
-
-    Args:
-        llm: A google.adk BaseLlm instance (e.g. from create_forge_llm())
-
-    Returns:
-        google.adk.agents.LlmAgent
-    """
-    try:
-        from google.adk.agents import LlmAgent
-    except ImportError:
-        raise ImportError("google-adk required. Install: pip install 'forge-ai[adk]'")
-
-    return LlmAgent(
-        name="forge-frontend",
-        description="Generates frontend code: React components, routing, state, API integration.",
-        model=llm,
-        instruction=ADK_INSTRUCTION,
-    )
-
-
 class FrontendAgent(BaseAgent):
     name = "frontend"
     skill_description = (
         "Generates frontend code: React components, pages, routing, "
         "state management, and API integration."
     )
-    role = ADK_INSTRUCTION
+    role = ROLE_INSTRUCTION
 
     def generate_frontend(
         self,
@@ -141,55 +112,3 @@ Use this format for each file:
 Write COMPLETE files. Match the backend API contracts exactly."""
 
         return self.invoke(prompt)
-
-    def handle_a2a_task(self, task):
-        """A2A entry point with frontend-specific context handling."""
-        context = task.context or {}
-        spec = context.get("spec", "")
-        rules = context.get("rules", "")
-        decisions = context.get("decisions", {})
-        backend_files = context.get("backend_files", [])
-        contracts = context.get("contracts", "")
-        backend_code = context.get("backend_code", {})
-
-        if isinstance(decisions, dict):
-            import json
-            decisions_str = json.dumps(decisions, indent=2)
-        else:
-            decisions_str = str(decisions)
-
-        prompt_parts = [p.text for p in task.message.parts if hasattr(p, "text")]
-        task_text = "\n".join(prompt_parts)
-
-        if spec:
-            # Build enriched context with contracts and backend code
-            extra_context = ""
-            if contracts:
-                extra_context += f"\n\n## Backend API Contracts (match these exactly)\n{contracts}"
-            if backend_code and isinstance(backend_code, dict):
-                extra_context += "\n\n## Backend Code Reference"
-                for fp, content in backend_code.items():
-                    extra_context += f"\n### {fp}\n```\n{content}\n```"
-
-            response = self.generate_frontend(
-                spec, rules, decisions_str, backend_files,
-                project_context=extra_context,
-            )
-        else:
-            response = self.invoke(task_text)
-
-        files = self.extract_files(response)
-
-        from ..a2a.types import TaskResult, TaskStatus, Artifact, TextPart, FilePart
-
-        artifacts = [
-            Artifact(type="text", name="response", parts=[TextPart(text=response)])
-        ]
-        if files:
-            artifacts.append(Artifact(
-                type="files",
-                name="frontend_files",
-                parts=[FilePart(path=fp, content=c) for fp, c in files],
-            ))
-
-        return TaskResult(id=task.id, status=TaskStatus.completed, artifacts=artifacts)
