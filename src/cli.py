@@ -712,15 +712,11 @@ def cmd_build(args):
     feature = getattr(args, 'feature', None)
     no_review = getattr(args, 'no_review', False)
     verbose = getattr(args, 'verbose', False)
-    use_adk = getattr(args, 'adk', False)
     approval_mode = getattr(args, 'approval_mode', None)
 
     ui = BuildUI(verbose=verbose)
 
-    if use_adk:
-        print(f"Building with {provider_config} [ADK multi-agent mode]...")
-    else:
-        print(f"Building with {provider_config}...")
+    print(f"Building with {provider_config}...")
     print("")
 
     orchestrator = BuildOrchestrator(
@@ -728,7 +724,6 @@ def cmd_build(args):
         forge_path=forge_path,
         review=not no_review,
         verbose=verbose,
-        use_adk=use_adk,
         approval_mode=approval_mode,
         config_dict=config,
         ui=ui,
@@ -920,8 +915,6 @@ def main():
     build_parser.add_argument("--feature", "-f", help="Add a specific feature (incremental build)")
     build_parser.add_argument("--no-review", action="store_true", help="Skip review phase")
     build_parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
-    build_parser.add_argument("--adk", action="store_true",
-                              help="Use ADK multi-agent pipeline (Backend, Frontend, Security, CI, Deploy)")
     build_parser.add_argument("--approval-mode", choices=["off", "interactive"],
                               help="Override .forge/policy.yaml approval mode for this build")
     build_parser.set_defaults(func=cmd_build)

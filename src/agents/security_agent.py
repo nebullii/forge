@@ -1,14 +1,8 @@
 """Security agent -- static analysis, OWASP audit, and hardening suggestions."""
 
-from pathlib import Path
-from typing import Optional
-
 from .base import BaseAgent
-from ..providers.base import BaseProvider
 
-# ── ADK agent factory ─────────────────────────────────────────────────────────
-
-ADK_INSTRUCTION = """\
+ROLE_INSTRUCTION = """\
 You are Forge Security, an application security expert specializing in
 secure code review and hardening.
 
@@ -38,30 +32,6 @@ Then, if any files need patching, output the fixed versions:
 
 Be concise. Only report actual security issues, not style preferences.
 """
-
-
-def create_security_agent(llm):
-    """Create a Google ADK LlmAgent for the Security role.
-
-    Args:
-        llm: A google.adk BaseLlm instance (e.g. from create_forge_llm())
-
-    Returns:
-        google.adk.agents.LlmAgent
-    """
-    try:
-        from google.adk.agents import LlmAgent
-    except ImportError:
-        raise ImportError("google-adk required. Install: pip install 'forge-ai[adk]'")
-
-    return LlmAgent(
-        name="forge-security",
-        description="Security auditor: OWASP Top 10, secrets, injection flaws.",
-        model=llm,
-        instruction=ADK_INSTRUCTION,
-    )
-
-
 class SecurityAgent(BaseAgent):
     name = "security"
     skill_description = (
@@ -172,41 +142,3 @@ Output the YAML first, then any fixed files."""
             pass
 
         return result
-
-    def handle_a2a_task(self, task):
-        """A2A entry point for security audits."""
-        context = task.context or {}
-        files = context.get("files", {})
-        spec = context.get("spec", "")
-        rules = context.get("rules", "")
-
-        prompt_parts = [p.text for p in task.message.parts if hasattr(p, "text")]
-        task_text = "\n".join(prompt_parts)
-
-        if files:
-            audit = self.audit_files(files, spec, rules)
-        else:
-            # Fallback: invoke with raw task text
-            response = self.invoke(task_text)
-            audit = self._parse_audit(response)
-
-        from ..a2a.types import TaskResult, TaskStatus, Artifact, TextPart, FilePart
-        import yaml
-
-        audit_text = yaml.dump({
-            "passed": audit["passed"],
-            "issues": audit["issues"],
-        }, default_flow_style=False)
-
-        artifacts = [
-            Artifact(type="text", name="audit_report", parts=[TextPart(text=audit_text)])
-        ]
-
-        if audit["patched_files"]:
-            artifacts.append(Artifact(
-                type="files",
-                name="patched_files",
-                parts=[FilePart(path=fp, content=c) for fp, c in audit["patched_files"]],
-            ))
-
-        return TaskResult(id=task.id, status=TaskStatus.completed, artifacts=artifacts)

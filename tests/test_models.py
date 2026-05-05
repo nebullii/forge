@@ -3,13 +3,31 @@
 import pytest
 
 from src.collaboration.models import (
+    TaskPlanArtifact,
     CodeArtifact,
+    BuildOutputArtifact,
     DecisionArtifact,
     ReviewArtifact,
+    ReviewFindingArtifact,
     ContractArtifact,
     BuildLogArtifact,
     ReworkRequestArtifact,
+    VerificationArtifact,
 )
+
+
+class TestTaskPlanArtifact:
+    def test_creation(self):
+        art = TaskPlanArtifact(
+            task_id="task_01",
+            name="Build API",
+            description="Create backend routes",
+            specialization="backend",
+            planned_files=("backend/main.py",),
+        )
+        assert art.task_id == "task_01"
+        assert art.specialization == "backend"
+        assert art.planned_files == ("backend/main.py",)
 
 
 class TestCodeArtifact:
@@ -68,6 +86,20 @@ class TestReviewArtifact:
         assert len(art.issues) == 1
 
 
+class TestReviewFindingArtifact:
+    def test_creation(self):
+        art = ReviewFindingArtifact(
+            target_path="backend/main.py",
+            message="Missing input validation",
+            severity="error",
+            producer_agent="reviewer",
+            issue_type="security",
+        )
+        assert art.target_path == "backend/main.py"
+        assert art.issue_type == "security"
+        assert art.retryable is True
+
+
 class TestBuildLogArtifact:
     def test_defaults(self):
         art = BuildLogArtifact(message="hello")
@@ -77,6 +109,19 @@ class TestBuildLogArtifact:
     def test_error_level(self):
         art = BuildLogArtifact(message="fail", level="error", producer_agent="ci")
         assert art.level == "error"
+
+
+class TestBuildOutputArtifact:
+    def test_creation(self):
+        art = BuildOutputArtifact(
+            task_id="task_02",
+            specialization="backend",
+            planned_files=("backend/main.py",),
+            files_written=("backend/main.py", "backend/models.py"),
+            contract_types=("api", "model"),
+        )
+        assert art.files_written == ("backend/main.py", "backend/models.py")
+        assert art.contract_types == ("api", "model")
 
 
 class TestReworkRequestArtifact:
@@ -106,3 +151,19 @@ class TestContractArtifact:
         )
         assert art.contract_type == "api"
         assert art.data["method"] == "GET"
+
+
+class TestVerificationArtifact:
+    def test_creation(self):
+        art = VerificationArtifact(
+            verifier="python_syntax",
+            category="syntax",
+            passed=False,
+            severity="error",
+            summary="Syntax check failed",
+            files=("backend/main.py",),
+            retryable=True,
+        )
+        assert art.verifier == "python_syntax"
+        assert art.files == ("backend/main.py",)
+        assert art.retryable is True

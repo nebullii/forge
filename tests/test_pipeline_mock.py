@@ -1,8 +1,8 @@
 """Full pipeline integration test with a mock LLM provider.
 
-Simulates a complete build: planner → PM → backend → frontend → reviewer,
-verifying that files are written, contracts are extracted, and the bus
-contains the expected artifacts.  No real API calls.
+Exercises the four-layer flow at a high level and the legacy generators
+behind it, verifying that files are written, contracts are extracted, and
+the bus contains the expected artifacts. No real API calls.
 """
 
 import json
@@ -12,7 +12,6 @@ from unittest.mock import MagicMock
 
 from src.providers.base import BaseProvider, ProviderConfig
 from src.agents.planner import PlannerAgent
-from src.agents.project_manager import ProjectManagerAgent
 from src.agents.backend import BackendAgent
 from src.agents.frontend import FrontendAgent
 from src.agents.reviewer import ReviewerAgent
@@ -63,37 +62,21 @@ tasks:
   - id: task_01
     name: "Set up project"
     description: "Create project structure"
-    agent: coder
+    agent: builder
+    specialization: setup
     files: [requirements.txt]
   - id: task_02
     name: "Build API"
     description: "Create REST API"
-    agent: backend
+    agent: builder
+    specialization: backend
     files: [app/main.py]
   - id: task_03
     name: "Build UI"
     description: "Create React frontend"
-    agent: frontend
+    agent: builder
+    specialization: frontend
     files: [src/App.jsx]
-"""
-
-PM_RESPONSE = """\
-tasks:
-  - id: task_01
-    name: "Set up project"
-    agent: coder
-    prompt: "Create requirements.txt with fastapi and uvicorn"
-    contracts: ""
-  - id: task_02
-    name: "Build API"
-    agent: backend
-    prompt: "Create FastAPI app with /users endpoint"
-    contracts: "GET /users -> list of users"
-  - id: task_03
-    name: "Build UI"
-    agent: frontend
-    prompt: "Create React app consuming GET /users"
-    contracts: ""
 """
 
 BACKEND_RESPONSE = """\
@@ -167,7 +150,6 @@ class TestFullPipelineMock:
         return MockLLMProvider({
             "technology stack": PLANNER_RESPONSE,
             "forge planner": PLANNER_RESPONSE,
-            "forge project manager": PM_RESPONSE,
             "forge backend": BACKEND_RESPONSE,
             "forge frontend": FRONTEND_RESPONSE,
             "forge reviewer": REVIEWER_RESPONSE,
@@ -189,6 +171,8 @@ class TestFullPipelineMock:
         assert len(plan["tasks"]) >= 2
         assert "decisions" in plan
         assert plan["decisions"]["stack"]["framework"] == "fastapi"
+        assert all(task["agent"] == "builder" for task in plan["tasks"])
+        assert {task["specialization"] for task in plan["tasks"]} >= {"setup", "backend", "frontend"}
 
     def test_backend_produces_files_and_contracts(self, provider, project_root):
         backend = BackendAgent(provider, project_root)

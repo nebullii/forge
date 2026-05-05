@@ -39,15 +39,15 @@ def _base_config():
         ],
         "model_routing": {
             "planner": "ollama:reason_local",
-            "backend": ["ollama:code_local", "openai"],
-            "ci": "ollama:fast_local",
+            "builder": ["ollama:code_local", "openai"],
+            "security": "ollama:reason_local",
         },
     }
 
 
 def test_router_prefers_explicit_profile_then_fallbacks():
     router = ModelRouter(_base_config(), ProviderConfig(name="openai", model="gpt-4o"))
-    chain = router.route_chain("backend")
+    chain = router.route_chain("builder")
     assert chain[0].provider_config.profile == "code_local"
     assert chain[1].provider_config.name == "openai"
     assert any(item.provider_config.profile == "fast_local" for item in chain)

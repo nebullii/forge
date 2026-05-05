@@ -1,267 +1,123 @@
-# Forge Agents Reference
+# Forge Agents
 
-Each agent is a Python class extending `BaseAgent`. All agents:
-- Have a `role` (system prompt) and `name`
-- Can call `invoke(prompt)` to hit the LLM
-- Support A2A protocol via `handle_a2a_task(task) → TaskResult`
-- Can be served as HTTP via `agent.serve(port)`
+## Public Workflow Roles
 
----
-
-## Classic Pipeline Agents
+Forge exposes a small set of top-level roles:
 
 ### PlannerAgent
-**File:** `src/agents/planner.py`
-**Port (distributed):** 8101
 
-**Skill:** Analyzes spec + rules, produces a structured YAML build plan.
+File: `src/agents/planner.py`
 
-**Key methods:**
-- `analyze_and_plan(spec, rules, existing_files) → dict` — full build plan
-- `plan_incremental(spec, rules, feature, existing_files) → dict` — feature add
-- `_parse_plan(response) → dict` — YAML parser with fallback handling
+Responsibilities:
 
-**Output format:**
-```yaml
-decisions:
-  stack: {language, framework, database, styling}
-  architecture: "how components connect"
-  reasoning: "why these choices"
-tasks:
-  - id: task_01
-    name: "Set up project"
-    description: "..."
-    agent: coder
-    files: [requirements.txt, main.py]
-```
+- analyze the spec
+- choose the stack
+- define directory structure
+- emit ordered builder tasks
 
-**A2A behavior:** Extracts spec from `task.message`, runs `analyze_and_plan()`,
-returns plan dict in `Artifact.data`.
+Important outputs:
 
----
+- `decisions`
+- `TaskPlanArtifact`
 
-### CoderAgent
-**File:** `src/agents/coder.py`
-**Port (distributed):** N/A (used internally by orchestrator, not a standalone A2A agent)
+### BuilderAgent
 
-**Skill:** Generates complete file contents for a given build task.
+File: `src/agents/builder.py`
 
-**Key methods:**
-- `generate_files(task, spec, rules, decisions, project_context) → str`
-- `fix_file(filepath, current_content, issue, spec, rules) → str`
+Responsibilities:
 
-**System prompt emphasis:** Complete files only, no placeholders, all imports included.
-Uses ````file:path/to/file.ext` format.
+- execute implementation tasks
+- route internally by specialization
+- publish code and build output artifacts
 
----
+Builder specializations:
+
+- `setup`
+- `backend`
+- `frontend`
+- `ci`
+- `deploy`
+- `integration`
+
+Important outputs:
+
+- `CodeArtifact`
+- `BuildOutputArtifact`
+- contract registration for backend work
 
 ### ReviewerAgent
-**File:** `src/agents/reviewer.py`
-**Port (distributed):** 8107
 
-**Skill:** Cross-cutting code review — correctness, consistency, API contracts, security.
+File: `src/agents/reviewer.py`
 
-**Key methods:**
-- `review_files(files_written: dict[str, str], spec, rules) → dict`
-- `_parse_review(response) → dict`
+Responsibilities:
 
-**Output format:**
-```yaml
-passed: true/false
-issues:
-  - file: "path/to/file"
-    severity: error|warning
-    message: "description"
-```
+- inspect generated files
+- validate cross-file consistency
+- emit structured findings
+- trigger targeted rework
 
-**A2A behavior:** Reads `context.files` dict, runs `review_files()`, returns review
-dict in `Artifact.data`.
+Important outputs:
 
----
+- `ReviewArtifact`
+- `ReviewFindingArtifact`
+- `ReworkRequestArtifact`
 
-## ADK Specialized Agents
+### Verifier
 
-### BackendAgent
-**File:** `src/agents/backend.py`
-**Port (distributed):** 8102
+Files: `src/verification/`
 
-**Skill:** FastAPI routes, SQLAlchemy models, Pydantic schemas, service layer.
+This is a deterministic subsystem rather than an LLM agent.
 
-**System prompt focus:**
-- FastAPI + SQLAlchemy + Pydantic stack
-- Business logic in service functions (not route handlers)
-- CORS middleware when frontend exists
-- Environment variables for secrets (never hardcode)
-- SQLite default unless spec says otherwise
+Responsibilities:
 
-**Key method:** `generate_backend(spec, rules, decisions, project_context) → str`
+- run machine checks after review
+- produce structured pass/fail results
+- stop the pipeline on hard verification failures
 
-**A2A context expected:**
-```python
-{
-  "spec": str,
-  "rules": str,
-  "decisions": dict  # from PlannerAgent
-}
-```
+Important outputs:
 
-**Produces:** Backend source files (routes, models, schemas, services, main.py, config)
+- `VerificationArtifact`
+- `VerificationReport`
 
 ---
 
-### FrontendAgent
-**File:** `src/agents/frontend.py`
-**Port (distributed):** 8103
+## Internal Builder Generators
 
-**Skill:** React/TypeScript UI — components, pages, routing, API integration.
+These are implementation helpers behind `BuilderAgent`, not top-level workflow
+roles:
 
-**System prompt focus:**
-- React + TypeScript + Tailwind CSS
-- React Router for routing
-- React Query / SWR for server state
-- Must match backend API contracts exactly
-- Handle loading, error, and empty states
-- `VITE_API_URL` env var for API base URL
+- `CoderAgent`
+- `BackendAgent`
+- `FrontendAgent`
+- `CIAgent`
+- `DeployAgent`
 
-**Key method:** `generate_frontend(spec, rules, decisions, backend_files, project_context) → str`
-
-**A2A context expected:**
-```python
-{
-  "spec": str,
-  "rules": str,
-  "decisions": dict,
-  "backend_files": [str]  # list of backend file paths (for contract awareness)
-}
-```
-
-**Produces:** package.json, vite config, tsconfig, App.tsx, pages, components, hooks, API client
+They are still useful because different implementation slices need different
+prompts and generation strategies, but the orchestrator no longer treats them
+as separate public pipeline stages.
 
 ---
+
+## Optional Cross-Cutting Security
 
 ### SecurityAgent
-**File:** `src/agents/security_agent.py`
-**Port (distributed):** 8104
 
-**Skill:** OWASP Top 10 audit, secret detection, injection flaw analysis.
+File: `src/agents/security_agent.py`
 
-**System prompt focus:**
-- OWASP Top 10 (injection, auth, XSS, IDOR, misconfig, etc.)
-- Hardcoded secrets, API keys, passwords
-- SQL/NoSQL injection
-- Missing auth/authz checks
-- Reports issues AND provides fixed files
-
-**Key method:** `audit_files(files: dict[str, str], spec, rules) → dict`
-
-**Output format:**
-```python
-{
-  "passed": bool,
-  "issues": [{"file", "severity", "message", "fix"}],
-  "patched_files": [(path, content)]  # fixed versions
-}
-```
-
-**A2A context expected:**
-```python
-{
-  "files": {"path": "content", ...},  # all generated files
-  "spec": str,
-  "rules": str
-}
-```
-
-**Severity levels:** `critical`, `high`, `medium`, `low`
+Security is still available as a specialized analyzer, but it is not part of a
+separate orchestration mode. It can be used as a focused review/hardening pass
+inside the single Forge workflow.
 
 ---
 
-### CIAgent
-**File:** `src/agents/ci_cd.py`
-**Port (distributed):** 8105
+## How Roles Communicate
 
-**Skill:** GitHub Actions workflows, Dockerfile, docker-compose.
+Roles communicate through persisted, machine-readable artifacts:
 
-**System prompt focus:**
-- Multi-stage Dockerfile (minimize image size)
-- GitHub Actions: lint + test on PR, build+deploy on main
-- Pin dependency versions for reproducibility
-- Use GitHub Secrets for credentials
+- planner -> builder: task plans and decisions
+- builder -> reviewer/verifier: code, logs, contracts, output manifests
+- reviewer -> builder: findings and rework requests
+- verifier -> orchestrator/builder: verification results
 
-**Key method:** `generate_ci(spec, decisions, rules) → str`
-
-**A2A context expected:**
-```python
-{
-  "spec": str,
-  "decisions": dict,
-  "rules": str
-}
-```
-
-**Produces:**
-- `.github/workflows/ci.yml`
-- `.github/workflows/deploy.yml`
-- `Dockerfile`
-- `.dockerignore`
-- `docker-compose.yml`
-
----
-
-### DeployAgent
-**File:** `src/agents/deploy.py`
-**Port (distributed):** 8106
-
-**Skill:** Cloud deployment configs for Railway, Render, Vercel, Fly.io.
-
-**System prompt focus:**
-- Default to Railway (free tier, easiest)
-- Reads `.forge/deploy.md` template to detect target platform
-- Always include `.env.example` and `DEPLOY.md`
-- Health check endpoint required
-
-**Key method:** `generate_deploy(spec, decisions, deploy_template, rules) → str`
-
-**A2A context expected:**
-```python
-{
-  "spec": str,
-  "decisions": dict,
-  "deploy_template": str,  # contents of .forge/deploy.md
-  "rules": str
-}
-```
-
-**Platform detection:** Scans `deploy_template` for keywords (railway, render, vercel, fly, heroku).
-
-**Produces:** Platform config file + `.env.example` + `DEPLOY.md`
-
----
-
-## Adding a New Agent
-
-1. Create `src/agents/my_agent.py`:
-```python
-from .base import BaseAgent
-
-class MyAgent(BaseAgent):
-    name = "my_agent"
-    skill_description = "One-line description of what this agent does."
-    role = "You are Forge MyAgent, ..."
-
-    def my_method(self, ...) -> str:
-        return self.invoke(prompt)
-
-    def handle_a2a_task(self, task):
-        # optional: custom A2A handling
-        # default BaseAgent.handle_a2a_task() works for simple cases
-        ...
-```
-
-2. Export from `src/agents/__init__.py`
-
-3. Register in `BuildOrchestrator._init_adk_agents()` in `src/orchestrator.py`
-
-4. Add to `ForgeADKOrchestrator.AGENT_PORTS` and call in `run()` in `src/adk/orchestrator_agent.py`
-
-5. Add to `AGENT_PORTS` dict in `src/cli.py` (`_agents_start`)
+The control plane moves artifacts between roles. Roles do not rely on direct
+agent-to-agent chat.

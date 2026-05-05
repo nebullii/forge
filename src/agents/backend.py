@@ -1,13 +1,8 @@
 """Backend agent -- generates API routes, DB models, and service layer."""
 
-from pathlib import Path
-
 from .base import BaseAgent
-from ..providers.base import BaseProvider
 
-# ── ADK agent factory ─────────────────────────────────────────────────────────
-
-ADK_INSTRUCTION = """\
+ROLE_INSTRUCTION = """\
 You are Forge Backend, an expert backend engineer. You build APIs, database
 models, and service layers using WHATEVER framework the project decisions specify.
 
@@ -75,37 +70,13 @@ every API endpoint and data model you created. Use this EXACT format:
 This contract block is consumed by the frontend and security agents to ensure
 API compatibility. List EVERY endpoint and model — do not skip any.
 """
-
-
-def create_backend_agent(llm):
-    """Create a Google ADK LlmAgent for the Backend role.
-
-    Args:
-        llm: A google.adk BaseLlm instance (e.g. from create_forge_llm())
-
-    Returns:
-        google.adk.agents.LlmAgent
-    """
-    try:
-        from google.adk.agents import LlmAgent
-    except ImportError:
-        raise ImportError("google-adk required. Install: pip install 'forge-ai[adk]'")
-
-    return LlmAgent(
-        name="forge-backend",
-        description="Generates backend code: API routes, database models, service layer.",
-        model=llm,
-        instruction=ADK_INSTRUCTION,
-    )
-
-
 class BackendAgent(BaseAgent):
     name = "backend"
     skill_description = (
         "Generates backend code: REST API routes, database models, "
         "service/business logic, and configuration."
     )
-    role = ADK_INSTRUCTION
+    role = ROLE_INSTRUCTION
 
     def generate_backend(
         self,
@@ -151,43 +122,3 @@ After all files, output a contract block listing every endpoint and model:
 ```"""
 
         return self.invoke(prompt)
-
-    def handle_a2a_task(self, task):
-        """A2A entry point with backend-specific context handling."""
-        context = task.context or {}
-        spec = context.get("spec", "")
-        rules = context.get("rules", "")
-        decisions = context.get("decisions", {})
-
-        if isinstance(decisions, dict):
-            import json
-            decisions_str = json.dumps(decisions, indent=2)
-        else:
-            decisions_str = str(decisions)
-
-        # Extract task text
-        prompt_parts = [p.text for p in task.message.parts if hasattr(p, "text")]
-        task_text = "\n".join(prompt_parts)
-
-        if spec:
-            # Rich context available -- use specialized method
-            response = self.generate_backend(spec, rules, decisions_str)
-        else:
-            # Fallback: use raw task text
-            response = self.invoke(task_text)
-
-        files = self.extract_files(response)
-
-        from ..a2a.types import TaskResult, TaskStatus, Artifact, TextPart, FilePart
-
-        artifacts = [
-            Artifact(type="text", name="response", parts=[TextPart(text=response)])
-        ]
-        if files:
-            artifacts.append(Artifact(
-                type="files",
-                name="backend_files",
-                parts=[FilePart(path=fp, content=c) for fp, c in files],
-            ))
-
-        return TaskResult(id=task.id, status=TaskStatus.completed, artifacts=artifacts)

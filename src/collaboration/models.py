@@ -18,6 +18,24 @@ def _now() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Plan artifacts — planner → builder handoff
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class TaskPlanArtifact:
+    """A machine-readable task manifest emitted by the planner."""
+
+    task_id: str
+    name: str
+    description: str
+    producer_agent: str = "planner"
+    specialization: str = "coder"
+    planned_files: Tuple[str, ...] = ()
+    depends_on: Tuple[str, ...] = ()
+    created_at: str = field(default_factory=_now)
+
+
+# ---------------------------------------------------------------------------
 # Code artifacts — generated source files
 # ---------------------------------------------------------------------------
 
@@ -34,6 +52,23 @@ class CodeArtifact:
     tags: Tuple[str, ...] = ()
     created_at: str = field(default_factory=_now)
     version: int = 1
+
+
+# ---------------------------------------------------------------------------
+# Build artifacts — builder → reviewer/verifier handoff
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class BuildOutputArtifact:
+    """A structured summary of one completed builder task."""
+
+    task_id: str
+    producer_agent: str = "builder"
+    specialization: str = "coder"
+    planned_files: Tuple[str, ...] = ()
+    files_written: Tuple[str, ...] = ()
+    contract_types: Tuple[str, ...] = ()
+    created_at: str = field(default_factory=_now)
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +100,24 @@ class ReviewArtifact:
     task_id: str = ""
     passed: bool = True
     issues: Tuple[Dict[str, Any], ...] = ()
+    created_at: str = field(default_factory=_now)
+
+
+# ---------------------------------------------------------------------------
+# Review finding artifacts — reviewer/security → builder handoff
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ReviewFindingArtifact:
+    """A structured issue discovered during review."""
+
+    target_path: str
+    message: str
+    severity: str
+    producer_agent: str
+    task_id: str = ""
+    issue_type: str = "review"
+    retryable: bool = True
     created_at: str = field(default_factory=_now)
 
 
@@ -119,14 +172,38 @@ class ReworkRequestArtifact:
 
 
 # ---------------------------------------------------------------------------
+# Verification artifacts — verifier → orchestrator/builder handoff
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class VerificationArtifact:
+    """A machine-readable verification result published onto the bus."""
+
+    verifier: str
+    category: str
+    passed: bool
+    producer_agent: str = "verifier"
+    severity: str = "error"
+    summary: str = ""
+    details: str = ""
+    files: Tuple[str, ...] = ()
+    retryable: bool = False
+    created_at: str = field(default_factory=_now)
+
+
+# ---------------------------------------------------------------------------
 # Union alias
 # ---------------------------------------------------------------------------
 
 Artifact = Union[
+    TaskPlanArtifact,
     CodeArtifact,
+    BuildOutputArtifact,
     DecisionArtifact,
     ReviewArtifact,
+    ReviewFindingArtifact,
     ContractArtifact,
     BuildLogArtifact,
     ReworkRequestArtifact,
+    VerificationArtifact,
 ]

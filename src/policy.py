@@ -19,8 +19,8 @@ class BuildPolicy:
     approval_gates: list[str] = field(default_factory=list)
     allowed_frameworks: list[str] = field(default_factory=list)
     allowed_agents: list[str] = field(default_factory=list)
-    allow_adk: bool = True
     require_review: bool = False
+    require_verification: bool = True
     auto_export_openapi: bool = True
     openapi_title: str = "Forge Generated API"
 
@@ -68,10 +68,8 @@ class BuildPolicy:
                 )
         return errors
 
-    def validate_plan(self, stack: dict, agents: Iterable[str], use_adk: bool) -> list[str]:
+    def validate_plan(self, stack: dict, agents: Iterable[str]) -> list[str]:
         errors = []
-        if use_adk and not self.allow_adk:
-            errors.append("Policy blocked ADK multi-agent mode for this project.")
         errors.extend(self.validate_stack(stack))
         errors.extend(self.validate_agents(agents))
         return errors
@@ -108,8 +106,8 @@ def write_default_policy(path: Path) -> None:
         "approval_gates": policy.approval_gates,
         "allowed_frameworks": policy.allowed_frameworks,
         "allowed_agents": policy.allowed_agents,
-        "allow_adk": policy.allow_adk,
         "require_review": policy.require_review,
+        "require_verification": policy.require_verification,
         "auto_export_openapi": policy.auto_export_openapi,
         "openapi_title": policy.openapi_title,
     }
@@ -117,5 +115,6 @@ def write_default_policy(path: Path) -> None:
         "# Forge build policy\n"
         "# approval_gates can include: plan, build, review, task_write\n"
         "# allowed_frameworks and allowed_agents are optional allowlists\n"
+        "# Top-level agents are planner, builder, reviewer, and optional security\n"
         + yaml.dump(data, default_flow_style=False, sort_keys=False)
     )

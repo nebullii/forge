@@ -43,13 +43,9 @@ providers:
 
 model_routing:
   planner: ollama:reason_local
-  project_manager: ollama:reason_local
-  backend: ollama:code_local
-  frontend: ollama:code_local
+  builder: ollama:code_local
   reviewer: ollama:reason_local
   security: ollama:reason_local
-  ci: ollama:fast_local
-  deploy: ollama:fast_local
 """
 
 

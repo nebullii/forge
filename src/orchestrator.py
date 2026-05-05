@@ -4,6 +4,7 @@ import logging
 import sys
 import threading
 import uuid
+import json
 import yaml
 import re
 import time
@@ -15,9 +16,8 @@ logger = logging.getLogger(__name__)
 
 from .providers import create_provider
 from .providers.base import ProviderConfig
-from .agents import PlannerAgent, CoderAgent, ReviewerAgent
+from .agents import PlannerAgent, BuilderAgent, CoderAgent, ReviewerAgent
 from .agents import BackendAgent, FrontendAgent, SecurityAgent, CIAgent, DeployAgent
-from .agents import ProjectManagerAgent
 from .config import load_config
 from .audit import BuildAuditLogger
 from .policy import load_build_policy
@@ -30,13 +30,21 @@ from .context import build_context_string
 from .skills import SkillsLoader
 from .collaboration import (
     ArtifactBus,
+    ArtifactStore,
     ContractRegistry,
     CodeArtifact,
     DecisionArtifact,
+    TaskPlanArtifact,
+    BuildOutputArtifact,
     BuildLogArtifact,
+    ReviewArtifact,
+    ReviewFindingArtifact,
+    VerificationArtifact,
+    ReworkRequestArtifact,
     extract_contracts_from_response,
     validate_agent_output,
 )
+from .verification import VerificationContext, VerificationRegistry
 
 if TYPE_CHECKING:
     from .ui import BuildUI
@@ -47,8 +55,9 @@ class BuildOrchestrator:
 
     Pipeline phases:
       1. PLANNING   -- PlannerAgent analyzes spec, produces task list
-      2. BUILDING   -- CoderAgent executes each task sequentially
+      2. BUILDING   -- BuilderAgent executes planned implementation tasks
       3. REVIEWING  -- ReviewerAgent validates the output (optional)
+      4. VERIFYING  -- Deterministic verifiers validate the generated project
 
     State is persisted after each task, enabling resume on failure.
     """
@@ -59,7 +68,6 @@ class BuildOrchestrator:
         forge_path: Path,
         review: bool = True,
         verbose: bool = False,
-        use_adk: bool = False,
         approval_mode: Optional[str] = None,
         config_dict: Optional[dict] = None,
         ui: Optional["BuildUI"] = None,
@@ -67,7 +75,6 @@ class BuildOrchestrator:
         self.forge_path = forge_path
         self.project_root = forge_path.parent
         self.verbose = verbose
-        self.use_adk = use_adk
         self.ui = ui
         self.policy = load_build_policy(forge_path)
         if approval_mode:
@@ -90,12 +97,12 @@ class BuildOrchestrator:
         skills = SkillsLoader().load(self.project_root)
 
         self.planner = PlannerAgent(self.provider, self.project_root, skills_loader=skills)
+        self.builder = BuilderAgent(self.provider, self.project_root, skills_loader=skills)
         self.coder = CoderAgent(self.provider, self.project_root, skills_loader=skills)
         self.reviewer = ReviewerAgent(self.provider, self.project_root, skills_loader=skills) if self.review else None
-        self.project_manager = ProjectManagerAgent(self.provider, self.project_root, skills_loader=skills)
+        self.verification_registry = VerificationRegistry()
+        self._verification_report = None
 
-        # ADK specialized agents (initialized lazily in ADK mode)
-        self._adk_agents = None
         self._classic_agents: dict = {}  # lazy: agent_name → agent instance
         self._skills = skills
 
@@ -103,6 +110,9 @@ class BuildOrchestrator:
         # Load existing contracts for incremental builds (forge build --feature)
         contracts_path = self.forge_path / "contracts.json"
         self.bus = ArtifactBus()
+        self.artifact_store = ArtifactStore(self.forge_path)
+        for artifact in self.artifact_store.load_all():
+            self.bus.publish(artifact)
         self.registry = (
             ContractRegistry.load(contracts_path)
             if contracts_path.exists()
@@ -120,71 +130,6 @@ class BuildOrchestrator:
         self._build_start_time: Optional[float] = None
         self._state_lock = threading.Lock()  # protects state mutations in parallel mode
 
-    def _init_adk_agents(self) -> dict:
-        """Initialize all specialized agents as ADK LlmAgent + ADKAgentRunner instances."""
-        if self._adk_agents is not None:
-            return self._adk_agents
-
-        from .adk.llm_bridge import create_forge_llm
-        from .adk.agent_runner import ADKAgentRunner
-        from .providers import create_provider
-        from .agents import (
-            create_planner_agent, create_backend_agent, create_frontend_agent,
-            create_security_agent, create_ci_agent, create_deploy_agent,
-            create_reviewer_agent, create_project_manager_agent,
-        )
-
-        def _llm_for(role: str):
-            decision = self.model_router.route_chain(role)[0]
-            provider = create_provider(decision.provider_config)
-            self.audit.log(
-                "model_route_selected",
-                build_id=self.state.build_id or "",
-                role=role,
-                provider=decision.provider_config.name,
-                profile=decision.provider_config.profile,
-                model=decision.provider_config.model,
-                reason=decision.reason,
-                mode="adk_init",
-            )
-            return create_forge_llm(provider)
-
-        self._adk_agents = {
-            "planner": ADKAgentRunner(
-                create_planner_agent(_llm_for("planner")), name="planner",
-                skill_description="Analyzes spec and produces a structured build plan.",
-            ),
-            "backend": ADKAgentRunner(
-                create_backend_agent(_llm_for("backend")), name="backend",
-                skill_description="Generates FastAPI backend: routes, models, services.",
-            ),
-            "frontend": ADKAgentRunner(
-                create_frontend_agent(_llm_for("frontend")), name="frontend",
-                skill_description="Generates React/TypeScript frontend with API integration.",
-            ),
-            "security": ADKAgentRunner(
-                create_security_agent(_llm_for("security")), name="security",
-                skill_description="OWASP security audit and code hardening.",
-            ),
-            "ci": ADKAgentRunner(
-                create_ci_agent(_llm_for("ci")), name="ci",
-                skill_description="Generates GitHub Actions workflows, Dockerfile, docker-compose.",
-            ),
-            "deploy": ADKAgentRunner(
-                create_deploy_agent(_llm_for("deploy")), name="deploy",
-                skill_description="Generates deployment configs for Railway, Render, Vercel, Fly.io.",
-            ),
-            "reviewer": ADKAgentRunner(
-                create_reviewer_agent(_llm_for("reviewer")), name="reviewer",
-                skill_description="Reviews all generated code for correctness and consistency.",
-            ),
-            "project_manager": ADKAgentRunner(
-                create_project_manager_agent(_llm_for("project_manager")), name="project_manager",
-                skill_description="Assigns tasks to specialized agents with targeted prompts.",
-            ),
-        }
-        return self._adk_agents
-
     def run(self, feature: Optional[str] = None):
         """Run the build (or incremental feature addition)."""
         self._build_start_time = time.monotonic()
@@ -193,7 +138,6 @@ class BuildOrchestrator:
             build_id=self.state.build_id or "",
             provider=self.provider_config.name,
             model=self.provider_config.model,
-            use_adk=self.use_adk,
             approval_mode=self.policy.approval_mode,
         )
         try:
@@ -207,23 +151,19 @@ class BuildOrchestrator:
                 print("Edit it with your project description first.")
                 sys.exit(1)
 
-            if self.use_adk and not self.policy.allow_adk:
-                raise RuntimeError("Build policy blocks ADK multi-agent mode for this project.")
-
-            if self.use_adk:
-                self._run_adk(spec, rules)
-            elif self._can_resume(spec):
+            if self._can_resume(spec):
                 print("Resuming previous build...")
                 print("")
                 self._execute_remaining_tasks(spec, rules)
             else:
                 self._init_state(spec)
                 self._phase_plan(spec, rules, feature)
-                self._phase_manage(spec, rules)
                 self._phase_build(spec, rules)
 
             if self.review and self.reviewer:
                 self._phase_review(spec, rules)
+            if self.policy.require_verification:
+                self._phase_verify()
 
             self.state.status = "completed"
             self.state.completed_at = datetime.now().isoformat()
@@ -264,96 +204,6 @@ class BuildOrchestrator:
             )
             self._write_audit_report()
             raise
-    def _run_adk(self, spec: str, rules: str):
-        """Run the build using the ADK + A2A multi-agent pipeline."""
-        from .adk.orchestrator_agent import ForgeADKOrchestrator
-
-        self._init_state(spec)
-        self.state.status = "building"
-        self._save_state()
-
-        print("Phase 1-7: ADK Multi-Agent Pipeline")
-        print("  PlannerAgent → BackendAgent → FrontendAgent →")
-        print("  SecurityAgent → CIAgent → DeployAgent → ReviewerAgent")
-        print("")
-
-        agents = self._init_adk_agents()
-        orchestrator = ForgeADKOrchestrator(
-            provider=self.provider,
-            forge_path=self.forge_path,
-            agents=agents,
-        )
-
-        result = orchestrator.run(spec, rules, verbose=self.verbose)
-
-        # Surface agent errors before writing anything
-        errors = result.get("errors", [])
-        for err in errors:
-            logger.warning("ADK agent error: %s", err)
-            self.audit.log("adk_agent_error", build_id=self.state.build_id, error=err)
-
-        # Abort if planning itself failed — nothing useful to write
-        if errors and not result.get("files_written"):
-            self.state.status = "failed"
-            self.state.completed_at = datetime.now().isoformat()
-            self._save_state()
-            raise RuntimeError(f"ADK build failed: {errors[0]}")
-
-        # Write all generated files through the firewall
-        all_files = result.get("files_written", [])
-        written = []
-        self._approval_gate(
-            "task_write",
-            f"ADK pipeline generated {len(all_files)} files and is ready to write them.",
-        )
-        for filepath, content in all_files:
-            permitted, reason = self.firewall.validate_file_write(filepath, content)
-            if permitted:
-                try:
-                    self.coder.write_files([(filepath, content)])
-                    written.append(filepath)
-                    print(f"   + {filepath}")
-                    self.audit.log(
-                        "file_written",
-                        build_id=self.state.build_id,
-                        path=filepath,
-                        agent="adk",
-                    )
-                except Exception as e:
-                    print(f"   ERROR writing {filepath}: {e}")
-                    self.state.errors.append(f"Write error {filepath}: {e}")
-                    self.audit.log(
-                        "write_error",
-                        build_id=self.state.build_id,
-                        path=filepath,
-                        error=str(e),
-                    )
-            else:
-                print(f"   FIREWALL BLOCK: {filepath} ({reason})")
-                self.state.errors.append(f"Firewall blocked {filepath}: {reason}")
-                self.audit.log(
-                    "firewall_blocked",
-                    build_id=self.state.build_id,
-                    path=filepath,
-                    reason=reason,
-                )
-
-        self.state.files_written.extend(written)
-
-        # Print review summary if available
-        review = result.get("review")
-        if review and isinstance(review, dict):
-            passed = review.get("passed")
-            issues = review.get("issues", [])
-            if passed is True:
-                print("\nReview: passed")
-            elif issues:
-                print(f"\nReview: {len(issues)} issue(s) found")
-            print("")
-
-        self.state.status = "completed"
-        self.state.completed_at = datetime.now().isoformat()
-        self._save_state()
 
     def _can_resume(self, spec: str) -> bool:
         if self.state.status in ("not_started", "completed"):
@@ -365,6 +215,9 @@ class BuildOrchestrator:
         return len(pending) > 0
 
     def _init_state(self, spec: str):
+        self.bus = ArtifactBus()
+        self.artifact_store.reset()
+        self._verification_report = None
         self.state = BuildState(
             build_id=uuid.uuid4().hex[:8],
             status="planning",
@@ -400,7 +253,7 @@ class BuildOrchestrator:
         for key in ("stack", "architecture", "reasoning", "directory_structure"):
             value = decisions.get(key)
             if value:
-                self.bus.publish(DecisionArtifact(
+                self._publish_artifact(DecisionArtifact(
                     key=key, value=value, producer_agent="planner",
                 ))
 
@@ -413,9 +266,18 @@ class BuildOrchestrator:
                 id=task_data.get("id", f"task_{i+1:02d}"),
                 name=task_data.get("name", "Unnamed task"),
                 description=task_data.get("description", ""),
-                agent=task_data.get("agent", "coder"),
+                agent="builder",
+                specialization=task_data.get("specialization") or task_data.get("agent", "coder"),
+                planned_files=task_data.get("files", []),
             )
             self.state.tasks.append(task)
+            self._publish_artifact(TaskPlanArtifact(
+                task_id=task.id,
+                name=task.name,
+                description=task.description,
+                specialization=task.specialization or "coder",
+                planned_files=tuple(task.planned_files),
+            ))
 
         self.state.status = "building"
         self.state.current_task_index = 0
@@ -441,67 +303,11 @@ class BuildOrchestrator:
                 print(f"     - {t.name}")
             print("")
 
-    def _phase_manage(self, spec: str, rules: str):
-        """Phase 1b: Project Manager enriches tasks with agent assignments + prompts."""
-        if self.ui:
-            self.ui.spinner_start("    Project Manager distributing tasks")
-        else:
-            print("Phase 1b: Project Manager...")
-            print("")
-
-        tasks_as_dicts = [
-            {"id": t.id, "name": t.name, "description": t.description, "agent": t.agent}
-            for t in self.state.tasks
-        ]
-        plan = {"decisions": {}, "tasks": tasks_as_dicts}
-
-        # Recover decisions from decisions.md if present
-        decisions_path = self.forge_path / "decisions.md"
-        if decisions_path.exists():
-            plan["decisions"] = {"raw": decisions_path.read_text()}
-
-        try:
-            enriched = self._run_project_manager_with_routing(plan, spec, rules)
-        except Exception as e:
-            if self.ui:
-                self.ui.spinner_stop()
-            else:
-                print(f"   WARNING: Project Manager failed ({e}), using original plan")
-                print("")
-            return
-
-        if self.ui:
-            self.ui.spinner_stop()
-
-        enriched_tasks = enriched.get("tasks", [])
-        enriched_by_id = {t.get("id"): t for t in enriched_tasks}
-
-        for task_state in self.state.tasks:
-            enriched_task = enriched_by_id.get(task_state.id)
-            if enriched_task:
-                task_state.agent = enriched_task.get("agent", task_state.agent or "coder")
-                task_state.prompt = enriched_task.get("prompt", "")
-                task_state.contracts = enriched_task.get("contracts", "")
-
-        self._validate_policy({}, [t.agent for t in self.state.tasks])
-        self._save_state()
-        self.audit.log(
-            "tasks_enriched",
-            build_id=self.state.build_id,
-            agents={t.id: t.agent for t in self.state.tasks},
-        )
-
-        if not self.ui:
-            for t in self.state.tasks:
-                pad = " " * max(0, 40 - len(t.name))
-                print(f"     {t.name}{pad}→ {t.agent}")
-            print("")
-
     def _get_classic_agent(self, agent_name: str, provider_config: Optional[ProviderConfig] = None):
         """Return (or lazily create) a classic-mode agent for the given role and provider."""
         cls_map = {
             "planner": PlannerAgent,
-            "project_manager": ProjectManagerAgent,
+            "builder": BuilderAgent,
             "backend": BackendAgent,
             "frontend": FrontendAgent,
             "ci": CIAgent,
@@ -567,31 +373,6 @@ class BuildOrchestrator:
             )
         raise RuntimeError(f"Planner failed across all routed models: {'; '.join(errors)}")
 
-    def _run_project_manager_with_routing(self, plan: dict, spec: str, rules: str) -> dict:
-        errors = []
-        for attempt, decision in enumerate(self.model_router.route_chain("project_manager"), 1):
-            self._log_route_selection("project_manager", decision, "manage", attempt)
-            agent = self._get_classic_agent("project_manager", decision.provider_config)
-            try:
-                enriched = agent.enrich_plan(plan, spec, rules)
-                if isinstance(enriched, dict) and "tasks" in enriched:
-                    return enriched
-                reason = "project manager produced invalid plan"
-            except Exception as exc:
-                reason = str(exc)
-            errors.append(f"{decision.provider_config}: {reason}")
-            self.audit.log(
-                "model_route_failed",
-                build_id=self.state.build_id or "",
-                role="project_manager",
-                provider=decision.provider_config.name,
-                profile=decision.provider_config.profile,
-                model=decision.provider_config.model,
-                attempt=attempt,
-                error=reason,
-            )
-        raise RuntimeError(f"Project manager failed across all routed models: {'; '.join(errors)}")
-
     def _run_reviewer_with_routing(self, files_dict: dict[str, str], spec: str, rules: str) -> dict:
         errors = []
         for attempt, decision in enumerate(self.model_router.route_chain("reviewer"), 1):
@@ -632,7 +413,18 @@ class BuildOrchestrator:
         for attempt, decision in enumerate(self.model_router.route_chain(role), 1):
             self._log_route_selection(role, decision, "build", attempt)
             try:
-                if prompt_to_use:
+                if role == "builder":
+                    agent = self._get_classic_agent("builder", decision.provider_config)
+                    response = agent.build_task(
+                        fallback_task or {"name": "Task", "description": "", "files": []},
+                        spec,
+                        rules,
+                        decisions,
+                        project_context=project_context,
+                        backend_files=(fallback_task or {}).get("backend_files", []),
+                        deploy_template=(fallback_task or {}).get("deploy_template", ""),
+                    )
+                elif prompt_to_use:
                     agent = self._get_classic_agent(role, decision.provider_config)
                     response = agent.invoke(prompt_to_use)
                 else:
@@ -693,14 +485,13 @@ class BuildOrchestrator:
             print("Phase 2: Building...")
             print("")
 
-        # Check if we can parallelise: tasks must span multiple agent types
-        agents_used = {(t.agent or "coder") for t in self.state.tasks}
+        lanes_used = {self._task_lane(task) for task in self.state.tasks}
         self._approval_gate(
             "build",
-            f"Build phase will run {len(self.state.tasks)} tasks across {sorted(agents_used)}.",
+            f"Build phase will run {len(self.state.tasks)} tasks across {sorted(lanes_used)}.",
         )
         interactive_gates = self.policy.approval_mode == "interactive" and self.policy.approval_gates
-        if len(agents_used) > 1 and not interactive_gates:
+        if len(lanes_used) > 1 and not interactive_gates:
             self._execute_tasks_parallel(spec, rules)
         else:
             self._execute_tasks_sequential(spec, rules)
@@ -738,7 +529,8 @@ class BuildOrchestrator:
 
         project_context = build_context_string(self.project_root, max_tokens=3000)
 
-        agent_name = task.agent or "coder"
+        agent_name = task.agent or "builder"
+        specialization = task.specialization or "coder"
         self.audit.log(
             "task_started",
             build_id=self.state.build_id,
@@ -749,7 +541,7 @@ class BuildOrchestrator:
 
         # Inject contract context for frontend tasks
         prompt_to_use = task.prompt
-        if agent_name == "frontend" and prompt_to_use and len(self.registry) > 0:
+        if specialization == "frontend" and prompt_to_use and len(self.registry) > 0:
             contracts_block = self.registry.format_for_prompt()
             backend_code = self.bus.export_files_dict()
             backend_relevant = {
@@ -768,10 +560,16 @@ class BuildOrchestrator:
         task_dict = {
             "name": task.name,
             "description": task.description,
-            "files": [],
+            "files": task.planned_files,
+            "specialization": specialization,
+            "backend_files": [
+                path for path in self.bus.export_files_dict()
+                if any(token in path.lower() for token in ("api", "route", "schema", "model", "main"))
+            ],
+            "deploy_template": self._read_forge_file("deploy.md"),
         }
         response, files, used_provider = self._generate_with_routing(
-            agent_name=agent_name,
+            agent_name="builder",
             prompt_to_use=prompt_to_use or "",
             fallback_task=task_dict,
             spec=spec,
@@ -779,12 +577,12 @@ class BuildOrchestrator:
             decisions=self.state.decisions,
             project_context=project_context,
         )
-        writer_agent = self._get_classic_agent(agent_name if prompt_to_use else "coder", used_provider)
+        writer_agent = self._get_classic_agent("builder", used_provider)
         self.audit.log(
             "task_model_used",
             build_id=self.state.build_id,
             task_id=task.id,
-            agent=agent_name,
+            agent="builder",
             provider=used_provider.name,
             profile=used_provider.profile,
             model=used_provider.model,
@@ -801,7 +599,7 @@ class BuildOrchestrator:
                     with self._state_lock:
                         print(f"      FIREWALL BLOCK: {filepath} ({reason})")
                 self.state.errors.append(f"Firewall blocked {filepath}: {reason}")
-                self.bus.publish(BuildLogArtifact(
+                self._publish_artifact(BuildLogArtifact(
                     message=f"Firewall blocked {filepath}: {reason}",
                     producer_agent="firewall",
                     level="error",
@@ -823,19 +621,30 @@ class BuildOrchestrator:
 
         # Publish to artifact bus (thread-safe)
         for filepath, content in allowed_files:
-            self.bus.publish(CodeArtifact(
+            self._publish_artifact(CodeArtifact(
                 path=filepath, content=content,
-                producer_agent=agent_name, task_id=task.id,
+                producer_agent=specialization, task_id=task.id,
             ))
 
         # Extract contracts from backend agent responses
-        if agent_name == "backend":
+        if specialization == "backend":
             contracts = extract_contracts_from_response(
                 response, producer_agent="backend",
             )
             self.registry.register_many(contracts.get("api", []))
             self.registry.register_many(contracts.get("models", []))
             self.registry.register_many(contracts.get("events", []))
+            contract_types = tuple(
+                name
+                for name, items in (
+                    ("api", contracts.get("api", [])),
+                    ("model", contracts.get("models", [])),
+                    ("event", contracts.get("events", [])),
+                )
+                if items
+            )
+        else:
+            contract_types = ()
 
         task.files_written = written
         task.status = "completed"
@@ -850,7 +659,7 @@ class BuildOrchestrator:
                 build_id=self.state.build_id,
                 task_id=task.id,
                 path=path,
-                agent=agent_name,
+                agent="builder",
             )
         self.audit.log(
             "task_completed",
@@ -859,6 +668,13 @@ class BuildOrchestrator:
             task_name=task.name,
             files_written=len(written),
         )
+        self._publish_artifact(BuildOutputArtifact(
+            task_id=task.id,
+            specialization=specialization,
+            planned_files=tuple(task.planned_files),
+            files_written=tuple(written),
+            contract_types=contract_types,
+        ))
 
         if self.ui:
             self.ui.task_done(task.name, written)
@@ -876,8 +692,8 @@ class BuildOrchestrator:
 
     def _execute_remaining_tasks(self, spec: str, rules: str):
         """Backward-compat entry point used by the resume path."""
-        agents_used = {(t.agent or "coder") for t in self.state.tasks}
-        if len(agents_used) > 1:
+        lanes_used = {self._task_lane(task) for task in self.state.tasks}
+        if len(lanes_used) > 1:
             self._execute_tasks_parallel(spec, rules)
         else:
             self._execute_tasks_sequential(spec, rules)
@@ -931,8 +747,8 @@ class BuildOrchestrator:
         scheduler = ParallelScheduler(max_workers=4)
 
         if not self.ui:
-            agents = {n.agent for n in graph}
-            print(f"   Parallel scheduler: {len(graph)} tasks across {agents}")
+            lanes = {n.agent for n in graph}
+            print(f"   Parallel scheduler: {len(graph)} tasks across {lanes}")
             print("")
 
         def _run(task_id: str):
@@ -1003,6 +819,13 @@ class BuildOrchestrator:
                 contracts_note += "\n".join(f"- {i}" for i in sec_check["issues"])
 
         review = self._run_reviewer_with_routing(files_dict, spec, rules + contracts_note)
+        issues = tuple(review.get("issues", []))
+        self._publish_artifact(ReviewArtifact(
+            target_path="",
+            producer_agent="reviewer",
+            passed=review.get("passed", False),
+            issues=issues,
+        ))
 
         if self.ui:
             self.ui.spinner_stop()
@@ -1015,6 +838,17 @@ class BuildOrchestrator:
             issues = review.get("issues", [])
             errors = [i for i in issues if i.get("severity") == "error"]
             warnings = [i for i in issues if i.get("severity") == "warning"]
+
+            for issue in issues:
+                filepath = issue.get("file", "")
+                self._publish_artifact(ReviewFindingArtifact(
+                    target_path=filepath,
+                    message=issue.get("message", ""),
+                    severity=issue.get("severity", "warning"),
+                    producer_agent="reviewer",
+                    issue_type=issue.get("type", "review"),
+                    retryable=issue.get("severity") == "error",
+                ))
 
             if not self.ui:
                 print(f"   Review found {len(issues)} issue(s):")
@@ -1034,6 +868,12 @@ class BuildOrchestrator:
                             # Route fixes to the original agent that produced the file
                             code_art = self.bus.latest(filepath)
                             producer = code_art.producer_agent if code_art else "coder"
+                            self._publish_artifact(ReworkRequestArtifact(
+                                target_path=filepath,
+                                original_agent=producer,
+                                issue=issue.get('message', ''),
+                                producer_agent="reviewer",
+                            ))
                             fixed_files, used_provider = self._fix_with_routing(
                                 producer=producer,
                                 filepath=filepath,
@@ -1049,7 +889,7 @@ class BuildOrchestrator:
                             for fp, content in fixed_files:
                                 existing = self.bus.latest(fp)
                                 version = (existing.version + 1) if existing else 1
-                                self.bus.publish(CodeArtifact(
+                                self._publish_artifact(CodeArtifact(
                                     path=fp,
                                     content=content,
                                     producer_agent=producer,
@@ -1089,6 +929,67 @@ class BuildOrchestrator:
             status = "passed" if review["passed"] else f"{len(review.get('issues', []))} issue(s)"
             self.ui.phase_end(f"  Review {status}{fix_note}")
         else:
+            print("")
+
+    def _phase_verify(self):
+        if self.ui:
+            self.ui.phase_start("Phase 4: Verifying")
+        else:
+            print("Phase 4: Verifying...")
+
+        files_dict = self.bus.export_files_dict()
+        if not files_dict:
+            for filepath in self.state.files_written:
+                full_path = self.project_root / filepath
+                if full_path.exists():
+                    try:
+                        files_dict[filepath] = full_path.read_text()
+                    except Exception:
+                        pass
+
+        context = VerificationContext(
+            project_root=self.project_root,
+            files=files_dict,
+            decisions=self.bus.get_decisions(),
+            contracts=self.registry,
+        )
+        report = self.verification_registry.run(context)
+        self._verification_report = report
+
+        verification_path = self.forge_path / "verification.json"
+        verification_path.write_text(json.dumps(report.to_dict(), indent=2) + "\n")
+
+        for result in report.results:
+            self._publish_artifact(VerificationArtifact(
+                verifier=result.verifier,
+                category=result.category,
+                passed=result.passed,
+                severity=result.severity,
+                summary=result.summary,
+                details=result.details,
+                files=result.files,
+                retryable=result.retryable,
+            ))
+            self.audit.log(
+                "verification_result",
+                build_id=self.state.build_id,
+                verifier=result.verifier,
+                category=result.category,
+                passed=result.passed,
+                severity=result.severity,
+                summary=result.summary,
+            )
+
+        if not report.passed:
+            failed = report.failed_results()[0]
+            raise RuntimeError(
+                f"Verification failed: {failed.verifier}: {failed.details or failed.summary}"
+            )
+
+        if self.ui:
+            self.ui.phase_end(f"  Verification passed ({len(report.results)} checks)")
+        else:
+            print(f"   Verification passed ({len(report.results)} checks)")
             print("")
 
     def _read_forge_file(self, name: str) -> str:
@@ -1140,9 +1041,18 @@ class BuildOrchestrator:
 
     def _save_state(self):
         save_build_state(self.forge_path, self.state)
+        self.artifact_store.write_snapshot(self.bus.snapshot())
+
+    def _task_lane(self, task: TaskState) -> str:
+        return (task.specialization or task.agent or "setup").strip().lower()
+
+    def _publish_artifact(self, artifact) -> None:
+        self.bus.publish(artifact)
+        self.artifact_store.append(artifact)
+        self.artifact_store.write_snapshot(self.bus.snapshot())
 
     def _validate_policy(self, stack: dict, agents: list[str]) -> None:
-        errors = self.policy.validate_plan(stack, agents, self.use_adk)
+        errors = self.policy.validate_plan(stack, agents)
         if errors:
             for error in errors:
                 self.audit.log("policy_violation", build_id=self.state.build_id, message=error)
@@ -1192,8 +1102,8 @@ class BuildOrchestrator:
                 "mode": self.policy.mode,
                 "approval_mode": self.policy.approval_mode,
                 "approval_gates": self.policy.approval_gates,
-                "allow_adk": self.policy.allow_adk,
                 "require_review": self.policy.require_review,
+                "require_verification": self.policy.require_verification,
             },
             "tasks": task_counts,
             "files_written": self.state.files_written,
@@ -1203,6 +1113,11 @@ class BuildOrchestrator:
                 "models": len(self.registry.get_model_contracts()),
                 "events": len(self.registry.get_event_contracts()),
             },
+            "verification": (
+                self._verification_report.to_dict()
+                if self._verification_report is not None
+                else None
+            ),
         }
         self.audit.write_report(report)
 

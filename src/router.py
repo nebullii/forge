@@ -11,9 +11,10 @@ from .providers.base import ProviderConfig
 
 ROLE_CAPABILITIES = {
     "planner": ("reasoning", "large_context"),
-    "project_manager": ("reasoning", "large_context"),
+    "builder": ("code", "reasoning"),
     "reviewer": ("reasoning", "review", "large_context"),
     "security": ("reasoning", "review", "security"),
+    "verifier": (),
     "backend": ("code", "reasoning"),
     "frontend": ("code", "reasoning"),
     "coder": ("cheap", "code"),

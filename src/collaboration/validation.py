@@ -23,6 +23,7 @@ class ValidationResult:
 # Minimum expectations per agent type
 _MIN_FILES: Dict[str, int] = {
     "backend":  1,
+    "builder":  1,
     "frontend": 1,
     "ci":       1,
     "deploy":   1,
@@ -30,7 +31,6 @@ _MIN_FILES: Dict[str, int] = {
     "security": 0,   # security may only produce audit text, no files
     "reviewer": 0,   # reviewer produces review YAML, not files
     "planner":  0,   # planner produces structured data, not files
-    "project_manager": 0,
 }
 
 
