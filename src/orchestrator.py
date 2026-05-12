@@ -83,6 +83,8 @@ from .collaboration import (
     validate_agent_output,
 )
 from .verification import VerificationContext, VerificationRegistry
+from .verification.html_behavior import HTMLBehaviorVerifier
+from .verification.javascript import JavaScriptVerifier
 from .support import is_supported_provider
 from .ui import format_usage_summary
 
@@ -101,6 +103,14 @@ class BuildOrchestrator:
 
     State is persisted after each task, enabling resume on failure.
     """
+
+    # Max times the builder re-attempts a task after executable verifiers
+    # surface fixable errors. Counts attempts AFTER the initial generation.
+    MAX_REFEED_ATTEMPTS = 2
+
+    # Verifiers that run inline after each task, before disk write. Cheap +
+    # local (no LLM call), so we run them on every build regardless of phase.
+    _INLINE_VERIFIERS = (JavaScriptVerifier, HTMLBehaviorVerifier)
 
     def __init__(
         self,
@@ -766,6 +776,22 @@ class BuildOrchestrator:
                 corrections=[{"from": o, "to": n} for o, n in path_fixes],
             )
 
+        # Validate-and-refeed loop: run executable verifiers in-memory against
+        # the candidate files. On failure, build a fix prompt with the verifier
+        # output and re-invoke the builder. Bounded by MAX_REFEED_ATTEMPTS so
+        # a model that can't fix the bug doesn't loop forever.
+        files, refeed_history = self._refeed_until_clean(
+            task=task, files=files, spec=spec, rules=rules,
+        )
+        if refeed_history:
+            self.audit.log(
+                "task_refeed_summary",
+                build_id=self.state.build_id,
+                task_id=task.id,
+                attempts=len(refeed_history),
+                final_errors=refeed_history[-1].get("remaining_errors", 0),
+            )
+
         writer_agent = self._get_classic_agent("builder", used_provider)
         self.audit.log(
             "task_model_used",
@@ -901,6 +927,143 @@ class BuildOrchestrator:
             with self._state_lock:
                 for f in written:
                     print(f"      + {f}")
+
+    def _refeed_until_clean(
+        self,
+        task: TaskState,
+        files: list[tuple[str, str]],
+        spec: str,
+        rules: str,
+    ) -> tuple[list[tuple[str, str]], list[dict]]:
+        """Run executable verifiers; if they find issues, ask the model to fix.
+
+        Returns the (possibly-corrected) files list and a list of per-attempt
+        records for audit logging. Never raises — if the model can't fix the
+        issues, we surface them and let the caller proceed (firewall + Phase
+        4 verification will still gate the build).
+        """
+        from .agents.base import normalize_paths_against_plan
+
+        history: list[dict] = []
+        for attempt in range(self.MAX_REFEED_ATTEMPTS + 1):
+            failures = self._run_inline_verifiers(files)
+            if not failures:
+                if attempt > 0:
+                    msg = f"refeed: issues resolved after {attempt} attempt(s)"
+                    if self.ui:
+                        self.ui.note(msg)
+                    else:
+                        with self._state_lock:
+                            print(f"      ! {msg}")
+                return files, history
+
+            history.append({
+                "attempt": attempt,
+                "remaining_errors": sum(len(r.logs) for r in failures),
+            })
+            if attempt >= self.MAX_REFEED_ATTEMPTS:
+                # Out of attempts — surface and let firewall/Phase 4 handle it
+                msg = (
+                    f"refeed: {sum(len(r.logs) for r in failures)} issue(s) remain "
+                    f"after {attempt} refeed(s); proceeding to firewall + verification"
+                )
+                if self.ui:
+                    self.ui.note(msg)
+                else:
+                    with self._state_lock:
+                        print(f"      ! {msg}")
+                return files, history
+
+            fix_prompt = self._build_refeed_prompt(task, files, failures)
+            msg = f"refeed #{attempt + 1}: fixing {sum(len(r.logs) for r in failures)} issue(s)..."
+            if self.ui:
+                self.ui.note(msg)
+            else:
+                with self._state_lock:
+                    print(f"      ! {msg}")
+
+            try:
+                _resp, new_files, _cfg, _usage = self._generate_with_routing(
+                    agent_name=task.agent or "builder",
+                    prompt_to_use=fix_prompt,
+                    spec=spec, rules=rules,
+                )
+            except Exception as exc:
+                # If the fix attempt itself fails, log and stop refeeding
+                self.audit.log(
+                    "task_refeed_failed",
+                    build_id=self.state.build_id,
+                    task_id=task.id,
+                    attempt=attempt + 1,
+                    error=str(exc),
+                )
+                return files, history
+
+            new_files = normalize_paths_against_plan(new_files, task.planned_files)
+            if not new_files:
+                # Model returned nothing — give up rather than loop on empty
+                return files, history
+
+            # Merge: keep prior files not touched in this attempt, replace those that were
+            merged: dict[str, str] = {p: c for p, c in files}
+            for path, content in new_files:
+                merged[path] = content
+            files = list(merged.items())
+        return files, history
+
+    def _run_inline_verifiers(self, files: list[tuple[str, str]]):
+        """Run executable verifiers against candidate files plus prior bus state."""
+        bus_files = self.bus.export_files_dict()
+        combined = dict(bus_files)
+        for path, content in files:
+            combined[path] = content
+        context = VerificationContext(
+            project_root=self.project_root,
+            files=combined,
+            decisions=self.bus.get_decisions(),
+            contracts=self.registry,
+        )
+        failures = []
+        for verifier_cls in self._INLINE_VERIFIERS:
+            verifier = verifier_cls()
+            if not verifier.applies_to(context):
+                continue
+            result = verifier.run(context)
+            if (not result.passed) and result.severity == "error" and result.retryable:
+                failures.append(result)
+        return failures
+
+    def _build_refeed_prompt(
+        self, task: TaskState, files: list[tuple[str, str]], failures
+    ) -> str:
+        """Compose a fix-only prompt the model can act on without redesigning."""
+        file_blocks = []
+        for path, content in files:
+            file_blocks.append(f"```file:{path}\n{content.rstrip()}\n```")
+
+        issue_lines: list[str] = []
+        for result in failures:
+            issue_lines.append(f"## {result.verifier}")
+            for log in result.logs:
+                issue_lines.append(f"- {log}")
+
+        files_section = "\n\n".join(file_blocks) if file_blocks else "(no files yet)"
+        issues_section = "\n".join(issue_lines)
+
+        return (
+            f"You generated the following files for task '{task.name}':\n\n"
+            f"{files_section}\n\n"
+            f"Static analysis surfaced these issues that must be fixed:\n\n"
+            f"{issues_section}\n\n"
+            "Rules:\n"
+            "1. Fix ONLY the issues listed above.\n"
+            "2. Do not rename files or change paths.\n"
+            "3. Do not introduce new external network URLs.\n"
+            "4. If a function is reported as undefined, either define it or "
+            "remove the call.\n"
+            "5. Return the COMPLETE corrected file(s) using the exact same "
+            "`````file:path` format. Only include files that needed changes."
+        )
 
     def _task_by_id(self, task_id: str):
         """Look up a TaskState by id."""
