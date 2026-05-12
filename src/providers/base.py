@@ -86,6 +86,10 @@ class ProviderConfig:
     base_url: Optional[str] = None
     max_tokens: int = 8192
     context_window: Optional[int] = None  # None = auto-detect or provider default
+    # Ollama-specific knob: how long to keep the model loaded after a request.
+    # Default "30m" amortizes the 5-15s load cost across an entire build.
+    # Set to "0" to unload immediately, or "-1" / "indefinite" to pin in memory.
+    keep_alive: str = "30m"
     profile: str = ""
     capabilities: tuple[str, ...] = ()
     priority: int = 0
@@ -105,12 +109,16 @@ class BaseProvider(ABC):
         self._context_window: Optional[int] = config.context_window
 
     @abstractmethod
-    def chat(self, messages: list[dict], system: str = "") -> str:
-        """Send messages, return complete response text."""
+    def chat(self, messages: list[dict], system: str = "", **options) -> str:
+        """Send messages, return complete response text.
+
+        Recognised options (providers may ignore those they don't support):
+          - json_mode (bool): request structured JSON output.
+        """
         ...
 
     @abstractmethod
-    def stream(self, messages: list[dict], system: str = "") -> Generator[str, None, None]:
+    def stream(self, messages: list[dict], system: str = "", **options) -> Generator[str, None, None]:
         """Stream response tokens one at a time."""
         ...
 
@@ -142,7 +150,7 @@ class BaseProvider(ABC):
         self._last_usage = dict(usage or {})
 
     def chat_with_retry(self, messages: list[dict], system: str = "",
-                        max_retries: int = 3) -> str:
+                        max_retries: int = 3, **options) -> str:
         """Chat with classified retry on transient failures.
 
         Classifier behaviour:
@@ -152,11 +160,13 @@ class BaseProvider(ABC):
             raise immediately; retrying won't help.
           - unknown: treated as non-retryable to fail fast on bugs; if you
             need a behaviour change, add the pattern to RETRYABLE_PATTERNS.
+
+        Extra ``options`` (e.g. ``json_mode=True``) pass through to ``chat()``.
         """
         self.clear_last_usage()
         for attempt in range(max_retries):
             try:
-                return self.chat(messages, system)
+                return self.chat(messages, system, **options)
             except Exception as e:
                 kind = classify_error(e)
                 if kind != "retryable" or attempt == max_retries - 1:

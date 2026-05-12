@@ -30,7 +30,10 @@ class AnthropicProvider(BaseProvider):
                 return window
         return 200000
 
-    def chat(self, messages: list[dict], system: str = "") -> str:
+    def chat(self, messages: list[dict], system: str = "", **options) -> str:
+        # Anthropic doesn't accept extra params we use elsewhere (json_mode,
+        # keep_alive, ollama_options); silently ignore — the SDK enforces
+        # strict kwargs and would reject them.
         kwargs = {
             "model": self.config.model,
             "max_tokens": self.config.max_tokens,
@@ -43,7 +46,7 @@ class AnthropicProvider(BaseProvider):
             raise RuntimeError("Anthropic returned an empty response (no content blocks)")
         return response.content[0].text
 
-    def stream(self, messages: list[dict], system: str = "") -> Generator[str, None, None]:
+    def stream(self, messages: list[dict], system: str = "", **options) -> Generator[str, None, None]:
         kwargs = {
             "model": self.config.model,
             "max_tokens": self.config.max_tokens,

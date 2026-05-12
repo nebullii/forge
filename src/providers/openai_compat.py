@@ -46,16 +46,19 @@ class OpenAIProvider(BaseProvider):
                 return _OPENAI_WINDOWS[prefix]
         return 128000  # modern default
 
-    def chat(self, messages: list[dict], system: str = "") -> str:
+    def chat(self, messages: list[dict], system: str = "", **options) -> str:
         msgs = []
         if system:
             msgs.append({"role": "system", "content": system})
         msgs.extend(messages)
-        response = self.client.chat.completions.create(
-            model=self.config.model,
-            messages=msgs,
-            max_tokens=self.config.max_tokens,
-        )
+        kwargs: dict = {
+            "model": self.config.model,
+            "messages": msgs,
+            "max_tokens": self.config.max_tokens,
+        }
+        if options.get("json_mode"):
+            kwargs["response_format"] = {"type": "json_object"}
+        response = self.client.chat.completions.create(**kwargs)
         if not response.choices:
             raise RuntimeError("OpenAI returned an empty response (no choices)")
         content = response.choices[0].message.content
@@ -63,17 +66,20 @@ class OpenAIProvider(BaseProvider):
             raise RuntimeError("OpenAI returned a null message content")
         return content
 
-    def stream(self, messages: list[dict], system: str = "") -> Generator[str, None, None]:
+    def stream(self, messages: list[dict], system: str = "", **options) -> Generator[str, None, None]:
         msgs = []
         if system:
             msgs.append({"role": "system", "content": system})
         msgs.extend(messages)
-        response = self.client.chat.completions.create(
-            model=self.config.model,
-            messages=msgs,
-            max_tokens=self.config.max_tokens,
-            stream=True,
-        )
+        kwargs: dict = {
+            "model": self.config.model,
+            "messages": msgs,
+            "max_tokens": self.config.max_tokens,
+            "stream": True,
+        }
+        if options.get("json_mode"):
+            kwargs["response_format"] = {"type": "json_object"}
+        response = self.client.chat.completions.create(**kwargs)
         for chunk in response:
             if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content

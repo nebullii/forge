@@ -199,7 +199,10 @@ def test_ollama_provider_falls_back_to_generate_when_chat_404(monkeypatch):
     fake_requests = types.SimpleNamespace(post=fake_post, HTTPError=FakeHTTPError)
     monkeypatch.setitem(sys.modules, "requests", fake_requests)
 
-    provider = OllamaProvider(ProviderConfig(name="ollama", model="llama3.1", base_url="http://localhost:11434"))
+    # Pre-set context_window so the test doesn't depend on /api/show probing
+    provider = OllamaProvider(ProviderConfig(
+        name="ollama", model="llama3.1", base_url="http://localhost:11434", context_window=8192
+    ))
     result = provider.chat([{"role": "user", "content": "say hi"}], system="be concise")
 
     assert result == "hello from generate"
@@ -301,6 +304,48 @@ def test_provider_config_carries_context_window():
     provider = OllamaProvider(cfg)
     # Explicit config wins over auto-detection
     assert provider.get_context_window() == 4096
+
+
+def test_ollama_chat_passes_json_mode_keep_alive_and_num_ctx(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"message": {"content": "{}"}}
+
+    def fake_post(url, json=None, **kwargs):
+        captured["url"] = url
+        captured["body"] = json
+        return FakeResponse()
+
+    fake_requests = types.SimpleNamespace(post=fake_post, HTTPError=Exception)
+    monkeypatch.setitem(sys.modules, "requests", fake_requests)
+
+    provider = OllamaProvider(ProviderConfig(
+        name="ollama",
+        model="qwen2.5-coder:7b",
+        context_window=32768,  # skip auto-detect
+        keep_alive="1h",
+    ))
+    provider.chat([{"role": "user", "content": "ping"}], json_mode=True)
+
+    assert captured["url"].endswith("/api/chat")
+    body = captured["body"]
+    assert body["format"] == "json"
+    assert body["keep_alive"] == "1h"
+    assert body["options"]["num_ctx"] == 32768
+    assert body["stream"] is False
+
+
+def test_ollama_chat_default_keep_alive_from_config():
+    cfg = ProviderConfig(name="ollama", model="llama3.1:8b")
+    # Default should be the 30m the dataclass declares
+    assert cfg.keep_alive == "30m"
 
 
 def test_ollama_provider_records_usage_metrics(monkeypatch):

@@ -68,14 +68,15 @@ class OllamaProvider(BaseProvider):
                 return _FAMILY_WINDOWS[family]
         return DEFAULT_CONTEXT_WINDOW
 
-    def chat(self, messages: list[dict], system: str = "") -> str:
+    def chat(self, messages: list[dict], system: str = "", **options) -> str:
         import requests
         msgs = self._build_messages(messages, system)
+        payload = self._build_payload(msgs, stream=False, options=options)
 
         try:
             response = requests.post(
                 f"{self.base_url}/api/chat",
-                json={"model": self.config.model, "messages": msgs, "stream": False},
+                json=payload,
                 timeout=300,
             )
             response.raise_for_status()
@@ -92,16 +93,17 @@ class OllamaProvider(BaseProvider):
             model_error = self._model_not_found_error(exc.response)
             if model_error:
                 raise RuntimeError(model_error) from exc
-            return self._chat_via_generate(msgs)
+            return self._chat_via_generate(msgs, options=options)
 
-    def stream(self, messages: list[dict], system: str = "") -> Generator[str, None, None]:
+    def stream(self, messages: list[dict], system: str = "", **options) -> Generator[str, None, None]:
         import requests
         msgs = self._build_messages(messages, system)
+        payload = self._build_payload(msgs, stream=True, options=options)
 
         try:
             response = requests.post(
                 f"{self.base_url}/api/chat",
-                json={"model": self.config.model, "messages": msgs, "stream": True},
+                json=payload,
                 stream=True,
                 timeout=300,
             )
@@ -122,7 +124,30 @@ class OllamaProvider(BaseProvider):
             model_error = self._model_not_found_error(exc.response)
             if model_error:
                 raise RuntimeError(model_error) from exc
-            yield from self._stream_via_generate(msgs)
+            yield from self._stream_via_generate(msgs, options=options)
+
+    def _build_payload(self, msgs: list[dict], *, stream: bool, options: dict) -> dict:
+        """Compose the Ollama request body with json mode, keep_alive, num_ctx."""
+        payload: dict = {
+            "model": self.config.model,
+            "messages": msgs,
+            "stream": stream,
+        }
+        if options.get("json_mode"):
+            payload["format"] = "json"
+        keep_alive = options.get("keep_alive") or self.config.keep_alive
+        if keep_alive:
+            payload["keep_alive"] = keep_alive
+
+        # num_ctx tells Ollama how much context window to allocate — pinning it
+        # to the model's actual window avoids the default 2048-token cap that
+        # silently truncates long Forge prompts.
+        runtime_opts: dict = dict(options.get("ollama_options") or {})
+        if "num_ctx" not in runtime_opts:
+            runtime_opts["num_ctx"] = self.get_context_window()
+        if runtime_opts:
+            payload["options"] = runtime_opts
+        return payload
 
     def _build_messages(self, messages: list[dict], system: str = "") -> list[dict]:
         msgs = []
@@ -131,16 +156,13 @@ class OllamaProvider(BaseProvider):
         msgs.extend(messages)
         return msgs
 
-    def _chat_via_generate(self, messages: list[dict]) -> str:
+    def _chat_via_generate(self, messages: list[dict], options: dict | None = None) -> str:
         import requests
 
+        payload = self._build_generate_payload(messages, stream=False, options=options or {})
         response = requests.post(
             f"{self.base_url}/api/generate",
-            json={
-                "model": self.config.model,
-                "prompt": self._messages_to_prompt(messages),
-                "stream": False,
-            },
+            json=payload,
             timeout=300,
         )
         try:
@@ -156,16 +178,13 @@ class OllamaProvider(BaseProvider):
             raise RuntimeError(f"Ollama returned unexpected response: {str(data)[:200]}")
         return data["response"]
 
-    def _stream_via_generate(self, messages: list[dict]) -> Generator[str, None, None]:
+    def _stream_via_generate(self, messages: list[dict], options: dict | None = None) -> Generator[str, None, None]:
         import requests
 
+        payload = self._build_generate_payload(messages, stream=True, options=options or {})
         response = requests.post(
             f"{self.base_url}/api/generate",
-            json={
-                "model": self.config.model,
-                "prompt": self._messages_to_prompt(messages),
-                "stream": True,
-            },
+            json=payload,
             stream=True,
             timeout=300,
         )
@@ -184,6 +203,24 @@ class OllamaProvider(BaseProvider):
                 self._set_last_usage(self._extract_usage(data, endpoint="generate"))
             if "response" in data:
                 yield data["response"]
+
+    def _build_generate_payload(self, messages: list[dict], *, stream: bool, options: dict) -> dict:
+        payload: dict = {
+            "model": self.config.model,
+            "prompt": self._messages_to_prompt(messages),
+            "stream": stream,
+        }
+        if options.get("json_mode"):
+            payload["format"] = "json"
+        keep_alive = options.get("keep_alive") or self.config.keep_alive
+        if keep_alive:
+            payload["keep_alive"] = keep_alive
+        runtime_opts: dict = dict(options.get("ollama_options") or {})
+        if "num_ctx" not in runtime_opts:
+            runtime_opts["num_ctx"] = self.get_context_window()
+        if runtime_opts:
+            payload["options"] = runtime_opts
+        return payload
 
     def _messages_to_prompt(self, messages: list[dict]) -> str:
         prompt_parts: list[str] = []
