@@ -740,6 +740,32 @@ class BuildOrchestrator:
             decisions=self.bus.get_decisions(),
             project_context=project_context,
         )
+
+        # Normalize paths against the plan — local models routinely add
+        # spurious 'frontend/', 'src/', or 'app/' prefixes the planner didn't ask for.
+        from .agents.base import normalize_paths_against_plan
+        original_paths = [p for p, _ in files]
+        files = normalize_paths_against_plan(files, task.planned_files)
+        normalized_paths = [p for p, _ in files]
+        path_fixes = [
+            (orig, new) for orig, new in zip(original_paths, normalized_paths)
+            if orig != new
+        ]
+        if path_fixes:
+            for orig, new in path_fixes:
+                msg = f"path corrected: {orig} -> {new} (matched planned file)"
+                if self.ui:
+                    self.ui.note(msg)
+                else:
+                    with self._state_lock:
+                        print(f"      ! {msg}")
+            self.audit.log(
+                "task_path_normalized",
+                build_id=self.state.build_id,
+                task_id=task.id,
+                corrections=[{"from": o, "to": n} for o, n in path_fixes],
+            )
+
         writer_agent = self._get_classic_agent("builder", used_provider)
         self.audit.log(
             "task_model_used",
