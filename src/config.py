@@ -55,12 +55,49 @@ DEFAULT_CONFIG = CLOUD_FIRST_CONFIG
 
 
 # Ranked preference of locally-installed models. Earlier patterns win.
+# General-purpose fallback when role-specific lists don't match.
 _LOCAL_PREFERENCE = (
     "qwen2.5-coder:32b",
     "qwen2.5-coder:14b",
     "qwen2.5-coder:7b",
     "qwen2.5-coder",
+    "granite-code:34b",
+    "granite-code:20b",
+    "granite-code:8b",
+    "granite-code",
     "deepseek-coder",
+    "qwen3:32b",
+    "qwen3:14b",
+    "qwen3",
+    "qwen2.5:32b",
+    "qwen2.5:14b",
+    "qwen2.5",
+    "llama3.3",
+    "llama3.1:70b",
+    "llama3.1",
+    "llama3.2",
+    "llama3",
+    "mistral",
+)
+
+# Code-tuned models — strongest for the builder role.
+_CODER_PREFERENCE = (
+    "qwen2.5-coder:32b",
+    "qwen2.5-coder:14b",
+    "qwen2.5-coder:7b",
+    "qwen2.5-coder",
+    "granite-code:34b",
+    "granite-code:20b",
+    "granite-code:8b",
+    "granite-code",
+    "deepseek-coder",
+    "codellama",
+)
+
+# Reasoning-leaning models — used for planning and review where breadth and
+# instruction-following matter more than code-specialisation.
+_REASONING_PREFERENCE = (
+    "deepseek-r1",
     "qwen3:32b",
     "qwen3:14b",
     "qwen3",
@@ -93,25 +130,64 @@ def detect_ollama_models(base_url: str = OLLAMA_URL, timeout: float = 1.5) -> li
     return names
 
 
+def _pick_by_preferences(
+    installed: list[str], preferences: tuple[str, ...]
+) -> Optional[str]:
+    """Pick the first model whose name starts with any preference prefix."""
+    lowered = [(m, m.lower()) for m in installed]
+    for pref in preferences:
+        for original, lower in lowered:
+            if lower.startswith(pref):
+                return original
+    return None
+
+
 def pick_local_model(installed: list[str]) -> Optional[str]:
     """Pick the best-fit model from the installed set."""
     if not installed:
         return None
-    lowered = [(m, m.lower()) for m in installed]
-    for pref in _LOCAL_PREFERENCE:
-        for original, lower in lowered:
-            if lower.startswith(pref):
-                return original
-    return installed[0]
+    return _pick_by_preferences(installed, _LOCAL_PREFERENCE) or installed[0]
+
+
+def pick_role_models(installed: list[str]) -> dict[str, str]:
+    """Pick planner / coder / reviewer models from the installed set.
+
+    Strategy:
+      - planner: prefer a reasoning model (qwen3, deepseek-r1) so the
+        upstream decision-making isn't constrained by a coder-tuned lens.
+      - coder: prefer a code-tuned model (qwen2.5-coder, granite-code).
+      - reviewer: prefer a reasoning model that is DIFFERENT from coder so
+        we don't share blind spots. Falls back to coder when there is only
+        one model installed (the wizard warns the user when this happens).
+    """
+    if not installed:
+        fallback = "llama3.1:8b"
+        return {"primary": fallback, "coder": fallback, "reviewer": fallback}
+
+    coder = _pick_by_preferences(installed, _CODER_PREFERENCE)
+    reasoning = _pick_by_preferences(installed, _REASONING_PREFERENCE)
+    fallback = pick_local_model(installed) or installed[0]
+
+    primary = reasoning or fallback
+    coder = coder or fallback
+
+    # Reviewer: anything reasoning-leaning that isn't the coder model
+    reviewer = None
+    for model in [reasoning] + [m for m in installed if m != coder]:
+        if model and model != coder:
+            reviewer = model
+            break
+    reviewer = reviewer or fallback
+
+    return {"primary": primary, "coder": coder, "reviewer": reviewer}
 
 
 def build_local_first_config(installed: list[str]) -> str:
     """Render an Ollama-first config YAML for the detected models."""
-    picked = pick_local_model(installed) or "llama3.1:8b"
-    coder = next(
-        (m for m in installed if "coder" in m.lower() or "code" in m.lower()),
-        picked,
-    )
+    roles = pick_role_models(installed)
+    primary = roles["primary"]
+    coder = roles["coder"]
+    reviewer = roles["reviewer"]
     return f"""\
 # Forge Configuration (local-first)
 # Detected Ollama on {OLLAMA_URL} — using it as the primary provider.
@@ -120,16 +196,19 @@ def build_local_first_config(installed: list[str]) -> str:
 providers:
   - name: ollama
     base_url: {OLLAMA_URL}
-    model: {picked}
+    model: {primary}
     discover: true
     priority: 10
     profiles:
       primary:
-        model: {picked}
-        capabilities: [code, reasoning, local]
+        model: {primary}
+        capabilities: [reasoning, local]
       coder:
         model: {coder}
         capabilities: [code, local]
+      reviewer:
+        model: {reviewer}
+        capabilities: [reasoning, review, local]
 
   - name: anthropic
     api_key: ${{ANTHROPIC_API_KEY}}
@@ -144,8 +223,8 @@ providers:
 model_routing:
   planner: ollama:primary
   builder: ollama:coder
-  reviewer: ollama:primary
-  security: ollama:primary
+  reviewer: ollama:reviewer
+  security: ollama:reviewer
 """
 
 
@@ -191,8 +270,19 @@ def ensure_config() -> dict:
         CONFIG_FILE.write_text(yaml_text)
         print(f"Created config at {CONFIG_FILE}")
         if installed:
-            picked = pick_local_model(installed)
-            print(f"Detected local Ollama with {len(installed)} model(s) — using '{picked}' by default.")
+            roles = pick_role_models(installed)
+            unique_models = {roles["primary"], roles["coder"], roles["reviewer"]}
+            print(
+                f"Detected local Ollama with {len(installed)} model(s). "
+                f"Roles: planner={roles['primary']}, builder={roles['coder']}, "
+                f"reviewer={roles['reviewer']}."
+            )
+            if len(unique_models) < 2:
+                print(
+                    "  ! Only one usable model installed — builder and reviewer "
+                    "will share it. Co-blind review is weak; "
+                    "consider `ollama pull qwen2.5-coder:7b` for a second model."
+                )
             print("Cloud providers remain available as fallbacks; set API keys to enable them.")
         else:
             print("Edit it to add your API keys, or set environment variables.")

@@ -12,6 +12,7 @@ from src.config import (
     generate_default_config,
     get_provider_config,
     pick_local_model,
+    pick_role_models,
 )
 
 
@@ -71,6 +72,36 @@ def test_build_local_first_config_routes_builder_to_coder_model():
     data = yaml.safe_load(yaml_text)
     coder_profile = data["providers"][0]["profiles"]["coder"]
     assert "coder" in coder_profile["model"].lower()
+
+
+def test_pick_role_models_separates_reviewer_when_possible():
+    roles = pick_role_models(["qwen2.5-coder:7b", "qwen3:latest", "llama3.2:3b"])
+    # Builder should be the coder model; reviewer should be distinct
+    assert "coder" in roles["coder"].lower()
+    assert roles["reviewer"] != roles["coder"]
+    # Primary is qwen3 (it's earlier in the preference list than llama3.2)
+    assert roles["primary"] == "qwen3:latest"
+
+
+def test_pick_role_models_collapses_when_only_one_installed():
+    roles = pick_role_models(["llama3.1:8b"])
+    assert roles["primary"] == roles["coder"] == roles["reviewer"] == "llama3.1:8b"
+
+
+def test_pick_role_models_two_models_picks_reviewer():
+    # primary=qwen3, coder=qwen3 (no coder-specific), reviewer=llama3
+    roles = pick_role_models(["qwen3:latest", "llama3.2:3b"])
+    assert roles["reviewer"] == "llama3.2:3b"
+
+
+def test_build_local_first_config_emits_reviewer_profile():
+    yaml_text = build_local_first_config(["qwen2.5-coder:7b", "qwen3:latest"])
+    data = yaml.safe_load(yaml_text)
+    profiles = data["providers"][0]["profiles"]
+    assert "reviewer" in profiles
+    assert data["model_routing"]["reviewer"] == "ollama:reviewer"
+    # Builder and reviewer must point to different concrete models
+    assert profiles["coder"]["model"] != profiles["reviewer"]["model"]
 
 
 def test_detect_ollama_models_handles_unreachable(monkeypatch):
