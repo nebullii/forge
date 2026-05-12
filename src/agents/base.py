@@ -56,6 +56,34 @@ class BaseAgent:
         """Send a multi-turn conversation."""
         return self.provider.chat_with_retry(messages, system=self._system_prompt())
 
+    def invoke_streaming(self, prompt: str, on_chunk=None) -> str:
+        """Like invoke() but yields each chunk to *on_chunk* as it arrives.
+
+        Returns the complete accumulated response. If the provider's stream
+        path fails immediately, falls back to a regular chat call so callers
+        always get a result.
+        """
+        messages = [{"role": "user", "content": prompt}]
+        parts: list[str] = []
+        try:
+            for chunk in self.provider.stream_with_retry(messages, system=self._system_prompt()):
+                if not chunk:
+                    continue
+                parts.append(chunk)
+                if on_chunk is not None:
+                    try:
+                        on_chunk(chunk)
+                    except Exception:
+                        # Callback errors must not break the stream
+                        pass
+        except Exception:
+            # If streaming setup fails, fall back to the blocking path so the
+            # caller still gets a usable response.
+            if parts:
+                raise
+            return self.invoke(prompt)
+        return "".join(parts)
+
     def extract_files(self, response: str) -> list[tuple[str, str]]:
         """Extract file blocks from LLM response.
 

@@ -215,13 +215,22 @@ class PlannerAgent(BaseAgent):
         "You output ONLY the YAML format specified in the prompt. No markdown fences."
     )
 
-    def analyze_and_plan(self, spec: str, rules: str, existing_files: str = "") -> dict:
-        """Analyze spec + rules, return a structured plan as a dict."""
+    def analyze_and_plan(self, spec: str, rules: str, existing_files: str = "",
+                         on_chunk=None) -> dict:
+        """Analyze spec + rules, return a structured plan as a dict.
+
+        Pass *on_chunk* to receive streamed tokens as they arrive (used by the
+        UI to show a live counter). Output is still parsed once the stream
+        completes.
+        """
         if self._should_use_local_planner(existing_files):
             return self._plan_locally(spec, rules)
         prompt = self._build_plan_prompt(spec, rules, existing_files)
         prompt = self._fit_prompt_to_budget(prompt, spec, rules, existing_files)
-        response = self.invoke(prompt)
+        if on_chunk is not None:
+            response = self.invoke_streaming(prompt, on_chunk=on_chunk)
+        else:
+            response = self.invoke(prompt)
         return self._parse_plan(response)
 
     def _fit_prompt_to_budget(

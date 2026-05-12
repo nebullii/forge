@@ -13,6 +13,10 @@ from typing import Optional
 
 _DIVIDER = "─" * 51
 
+# Update the live token counter at most this often (seconds) to avoid
+# flickering on fast local models.
+_STREAM_REFRESH_INTERVAL = 0.1
+
 
 class BuildUI:
     """Terminal feedback for the build pipeline.
@@ -31,6 +35,12 @@ class BuildUI:
         self._spinner_stop_event = threading.Event()
         self._spinner_label = ""
         self._spinner_lock = threading.Lock()
+
+        # Streaming token counter state
+        self._stream_label = ""
+        self._stream_chars = 0
+        self._stream_started_at: Optional[float] = None
+        self._stream_last_render = 0.0
 
     # ------------------------------------------------------------------
     # Phase helpers
@@ -141,6 +151,65 @@ class BuildUI:
                 sys.stdout.flush()
             i += 1
             self._spinner_stop_event.wait(timeout=0.4)
+
+    # ------------------------------------------------------------------
+    # Streaming token counter
+    # ------------------------------------------------------------------
+
+    def stream_start(self, label: str):
+        """Begin a live token counter under *label*.
+
+        Replaces any active spinner. On non-TTY, prints the label once and
+        suppresses per-chunk updates.
+        """
+        self.spinner_stop()
+        self._stream_label = label
+        self._stream_chars = 0
+        self._stream_started_at = time.monotonic()
+        self._stream_last_render = 0.0
+        if not self._is_tty:
+            print(label, flush=True)
+            return
+        self._render_stream_line()
+
+    def stream_chunk(self, text: str):
+        """Record a streamed chunk and re-render the counter (TTY only)."""
+        if not text or self._stream_started_at is None:
+            return
+        self._stream_chars += len(text)
+        if not self._is_tty:
+            return
+        now = time.monotonic()
+        if now - self._stream_last_render < _STREAM_REFRESH_INTERVAL:
+            return
+        self._stream_last_render = now
+        self._render_stream_line()
+
+    def stream_stop(self):
+        """Clear the streaming line and emit a final summary."""
+        if self._stream_started_at is None:
+            return
+        elapsed = time.monotonic() - self._stream_started_at
+        chars = self._stream_chars
+        # Rough token estimate (4 chars/token) for a more familiar unit
+        tokens = max(1, chars // 4) if chars else 0
+        if self._is_tty:
+            sys.stdout.write("\r" + " " * (len(self._stream_label) + 40) + "\r")
+            sys.stdout.flush()
+        if tokens:
+            print(f"    {self._stream_label}: ~{tokens} tokens in {elapsed:.1f}s")
+        self._stream_label = ""
+        self._stream_chars = 0
+        self._stream_started_at = None
+
+    def _render_stream_line(self):
+        if self._stream_started_at is None:
+            return
+        elapsed = time.monotonic() - self._stream_started_at
+        tokens = max(1, self._stream_chars // 4) if self._stream_chars else 0
+        with self._spinner_lock:
+            sys.stdout.write(f"\r{self._stream_label}: ~{tokens} tok ({elapsed:.1f}s)   ")
+            sys.stdout.flush()
 
     # ------------------------------------------------------------------
     # Build summary

@@ -149,6 +149,29 @@ class BaseProvider(ABC):
     def _set_last_usage(self, usage: Optional[dict]) -> None:
         self._last_usage = dict(usage or {})
 
+    def stream_with_retry(self, messages: list[dict], system: str = "",
+                          max_retries: int = 3, **options) -> Generator[str, None, None]:
+        """Stream with classified retry on transient failures.
+
+        Retries only the connection setup (no resume mid-stream). Once a chunk
+        is yielded, downstream consumers see partial output if the stream is
+        cut — agents should accumulate and revalidate the full response.
+        """
+        self.clear_last_usage()
+        last_exc: Optional[Exception] = None
+        for attempt in range(max_retries):
+            try:
+                yield from self.stream(messages, system, **options)
+                return
+            except Exception as e:
+                last_exc = e
+                kind = classify_error(e)
+                if kind != "retryable" or attempt == max_retries - 1:
+                    raise
+                time.sleep(compute_backoff(attempt))
+        if last_exc:
+            raise last_exc
+
     def chat_with_retry(self, messages: list[dict], system: str = "",
                         max_retries: int = 3, **options) -> str:
         """Chat with classified retry on transient failures.

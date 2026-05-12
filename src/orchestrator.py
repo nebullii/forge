@@ -277,7 +277,6 @@ class BuildOrchestrator:
     def _phase_plan(self, spec: str, rules: str, feature: Optional[str]):
         if self.ui:
             self.ui.phase_start("Phase 1: Planning")
-            self.ui.spinner_start("    Analyzing spec")
         else:
             print("Phase 1: Planning...")
             print("")
@@ -287,6 +286,7 @@ class BuildOrchestrator:
         plan, planner_usage = self._run_planner_with_routing(spec, rules, feature, existing_context)
 
         if self.ui:
+            self.ui.stream_stop()
             self.ui.spinner_stop()
 
         decisions = plan.get("decisions", {})
@@ -455,7 +455,25 @@ class BuildOrchestrator:
                 if feature:
                     plan = agent.plan_incremental(spec, rules, feature, existing_context)
                 else:
-                    plan = agent.analyze_and_plan(spec, rules, existing_context)
+                    on_chunk = None
+                    if self.ui:
+                        # Show a live token counter while the planner streams.
+                        # New chain attempt → reset counter to start at 0.
+                        label = (
+                            "    Planning"
+                            if attempt == 1
+                            else f"    Planning (fallback #{attempt})"
+                        )
+                        self.ui.stream_stop()
+                        self.ui.stream_start(label)
+                        on_chunk = self.ui.stream_chunk
+                    try:
+                        plan = agent.analyze_and_plan(
+                            spec, rules, existing_context, on_chunk=on_chunk
+                        )
+                    finally:
+                        if self.ui:
+                            self.ui.stream_stop()
                 if isinstance(plan, dict) and plan.get("tasks"):
                     return plan, agent.provider.get_last_usage()
                 reason = "planner produced no tasks"
