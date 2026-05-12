@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from .contracts import AuthCoverageVerifier, ContractConsistencyVerifier
+from .html_behavior import HTMLBehaviorVerifier
+from .javascript import JavaScriptVerifier
 from .models import VerificationContext, VerificationReport
 from .python import PythonSyntaxVerifier
+from .structure import FrontendProjectVerifier, SupportedStackStructureVerifier
 
 
 class VerificationRegistry:
@@ -13,6 +16,10 @@ class VerificationRegistry:
             ContractConsistencyVerifier(),
             AuthCoverageVerifier(),
             PythonSyntaxVerifier(),
+            JavaScriptVerifier(),
+            HTMLBehaviorVerifier(),
+            SupportedStackStructureVerifier(),
+            FrontendProjectVerifier(),
         ]
 
     def applicable(self, context: VerificationContext):
