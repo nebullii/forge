@@ -10,6 +10,24 @@ BASE_URLS = {
 }
 
 
+# Public context windows for common OpenAI / Together / Groq models.
+_OPENAI_WINDOWS = {
+    "gpt-4o": 128000,
+    "gpt-4-turbo": 128000,
+    "gpt-4": 8192,
+    "gpt-3.5-turbo": 16385,
+    "o1": 128000,
+    "o3": 200000,
+    # Together-hosted llama variants
+    "meta-llama/meta-llama-3.1-405b": 131072,
+    "meta-llama/meta-llama-3.1-70b": 131072,
+    "meta-llama/meta-llama-3.1-8b": 131072,
+    # Groq-hosted
+    "llama-3.1-70b": 131072,
+    "mixtral-8x7b": 32768,
+}
+
+
 class OpenAIProvider(BaseProvider):
 
     def __init__(self, config: ProviderConfig):
@@ -20,6 +38,13 @@ class OpenAIProvider(BaseProvider):
         if base_url:
             kwargs["base_url"] = base_url
         self.client = OpenAI(**kwargs)
+
+    def _detect_context_window(self) -> int:
+        model = (self.config.model or "").lower()
+        for prefix in sorted(_OPENAI_WINDOWS, key=len, reverse=True):
+            if model.startswith(prefix):
+                return _OPENAI_WINDOWS[prefix]
+        return 128000  # modern default
 
     def chat(self, messages: list[dict], system: str = "") -> str:
         msgs = []

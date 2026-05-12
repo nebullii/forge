@@ -2,7 +2,6 @@
 
 import re
 import yaml
-from pathlib import Path
 
 from .base import BaseAgent
 
@@ -218,9 +217,85 @@ class PlannerAgent(BaseAgent):
 
     def analyze_and_plan(self, spec: str, rules: str, existing_files: str = "") -> dict:
         """Analyze spec + rules, return a structured plan as a dict."""
+        if self._should_use_local_planner(existing_files):
+            return self._plan_locally(spec, rules)
         prompt = self._build_plan_prompt(spec, rules, existing_files)
+        prompt = self._fit_prompt_to_budget(prompt, spec, rules, existing_files)
         response = self.invoke(prompt)
         return self._parse_plan(response)
+
+    def _fit_prompt_to_budget(
+        self, prompt: str, spec: str, rules: str, existing_files: str
+    ) -> str:
+        """Swap to the slim planner prompt when the model's window is small."""
+        from ..budget import PromptBudget, estimate_tokens, is_small_context
+
+        try:
+            window = self.provider.get_context_window()
+        except Exception:
+            return prompt
+        if not is_small_context(window):
+            return prompt
+
+        slim = self._build_slim_plan_prompt(spec, rules, existing_files)
+        budget = PromptBudget.for_model(self.provider, reserved_output=2048)
+        budget.consume(self._system_prompt())
+        if budget.fits(slim):
+            return slim
+        # Even the slim prompt doesn't fit — trim the existing-files block
+        return self._build_slim_plan_prompt(
+            spec, rules, budget.trim(existing_files)
+        )
+
+    def _build_slim_plan_prompt(self, spec: str, rules: str, existing_files: str) -> str:
+        """Compact planner prompt for small-context local models (<16k window).
+
+        Drops the ~5k-token framework selection guide and keeps only the
+        decision schema. Trades cross-stack reasoning for fit.
+        """
+        context = ""
+        if existing_files and existing_files != "(No project files yet)":
+            context = f"\n## Existing Files\n{existing_files}\n"
+
+        return f"""\
+## Spec
+{spec}
+
+## Rules
+{rules}
+{context}
+
+Pick the simplest stack that ships this spec. Default to FastAPI + React + SQLite
+unless the spec clearly needs something else (CLI, static site, real-time).
+Output ONLY YAML — no fences, no prose:
+
+decisions:
+  stack:
+    language: "..."
+    framework: "..."
+    database: "..."
+    frontend: "..."
+    styling: "..."
+  architecture: "One sentence."
+  reasoning: "1-2 sentences with complexity level (1-4)."
+  directory_structure: |
+    (full directory tree)
+
+tasks:
+  - id: task_01
+    name: "Set up skeleton"
+    description: "Project structure and manifests"
+    agent: builder
+    specialization: setup
+    files: [list]
+  - id: task_02
+    name: "..."
+    description: "..."
+    agent: builder
+    specialization: backend | frontend | ci | deploy | integration
+    files: [...]
+
+Aim for 3-6 tasks. Output ONLY the YAML."""
 
     def plan_incremental(self, spec: str, rules: str, feature_description: str,
                          existing_files: str) -> dict:
@@ -267,6 +342,277 @@ Output ONLY the YAML, nothing else."""
 
         response = self.invoke(prompt)
         return self._parse_plan(response)
+
+    def _should_use_local_planner(self, existing_files: str) -> bool:
+        provider_name = getattr(getattr(self, "provider", None), "config", None)
+        provider_name = getattr(provider_name, "name", "")
+        if str(provider_name).strip().lower() != "ollama":
+            return False
+        existing = (existing_files or "").strip()
+        return not existing or existing == "(No project files yet)"
+
+    def _plan_locally(self, spec: str, rules: str) -> dict:
+        profile = self._classify_project(spec, rules)
+        if profile == "api_only":
+            return self._api_only_plan(spec)
+        if profile == "static_site":
+            return self._static_site_plan(spec)
+        return self._fastapi_react_plan(spec)
+
+    def _classify_project(self, spec: str, rules: str) -> str:
+        text = f"{spec}\n{rules}".lower()
+        stack_text = self._section_text(spec, "Stack").lower()
+
+        if any(term in text for term in (
+            "api-only", "api only", "rest api", "json api", "backend only", "no frontend",
+        )):
+            return "api_only"
+
+        if any(term in stack_text for term in ("react", "vite", "fastapi")):
+            return "fastapi_react"
+
+        if any(term in text for term in ("static html", "plain html", "no backend", "single page")):
+            return "static_site"
+
+        if any(term in text for term in (
+            "dashboard", "admin", "login", "account", "signup", "sign in",
+            "crud", "database", "sqlite", "postgres", "api", "form submission",
+        )):
+            return "fastapi_react"
+
+        if any(term in text for term in ("marketing website", "landing page", "brochure site", "portfolio site", "docs site")):
+            return "static_site"
+
+        return "fastapi_react"
+
+    def _fastapi_react_plan(self, spec: str) -> dict:
+        return {
+            "template_family": "web-app",
+            "decisions": {
+                "stack": {
+                    "language": "Python",
+                    "framework": "FastAPI",
+                    "database": "sqlite3",
+                    "frontend": "react",
+                    "styling": "tailwind",
+                },
+                "architecture": (
+                    "FastAPI serves JSON endpoints to a Vite/React frontend, with a "
+                    "single SQLite database file for lightweight local persistence."
+                ),
+                "reasoning": (
+                    "Complexity Level 2. This looks like a simple full-stack app with "
+                    "a modest frontend surface and lightweight backend state, so the "
+                    "supported local path is a minimal FastAPI + React/Vite template."
+                ),
+                "directory_structure": (
+                    "/\n"
+                    "├── .gitignore\n"
+                    "├── backend/\n"
+                    "│   ├── .env.example\n"
+                    "│   ├── main.py\n"
+                    "│   └── routes/\n"
+                    "├── frontend/\n"
+                    "│   ├── index.html\n"
+                    "│   ├── package.json\n"
+                    "│   ├── vite.config.js\n"
+                    "│   ├── .env.example\n"
+                    "│   └── src/\n"
+                    "│       ├── main.jsx\n"
+                    "│       ├── App.jsx\n"
+                    "│       ├── api/\n"
+                    "│       ├── components/\n"
+                    "│       └── pages/\n"
+                    "└── README.md\n"
+                ),
+            },
+            "tasks": [
+                {
+                    "id": "task_01",
+                    "name": "Set up supported web app skeleton",
+                    "description": (
+                        "Create the supported FastAPI + React/Vite directory layout, manifests, "
+                        "entrypoints, and environment example files."
+                    ),
+                    "agent": "builder",
+                    "specialization": "setup",
+                    "files": [
+                        "README.md",
+                        ".gitignore",
+                        "backend/.env.example",
+                        "backend/main.py",
+                        "frontend/index.html",
+                        "frontend/package.json",
+                        "frontend/vite.config.js",
+                        "frontend/.env.example",
+                        "frontend/src/main.jsx",
+                        "frontend/src/App.jsx",
+                    ],
+                },
+                {
+                    "id": "task_02",
+                    "name": "Implement FastAPI backend",
+                    "description": (
+                        "Build the backend routes, validation, and persistence needed for the spec "
+                        "while keeping the API small and coherent."
+                    ),
+                    "agent": "builder",
+                    "specialization": "backend",
+                    "files": [
+                        "backend/main.py",
+                        "backend/routes/api.py",
+                    ],
+                },
+                {
+                    "id": "task_03",
+                    "name": "Implement React frontend",
+                    "description": (
+                        "Create the React views, reusable components, and styling needed for the "
+                        "requested product workflow."
+                    ),
+                    "agent": "builder",
+                    "specialization": "frontend",
+                    "files": [
+                        "frontend/src/App.jsx",
+                        "frontend/src/components/",
+                        "frontend/src/pages/",
+                    ],
+                },
+                {
+                    "id": "task_04",
+                    "name": "Integrate frontend and backend",
+                    "description": (
+                        "Connect the UI to backend endpoints, finalize environment documentation, "
+                        "and ensure local development wiring is coherent."
+                    ),
+                    "agent": "builder",
+                    "specialization": "integration",
+                    "files": [
+                        "backend/.env.example",
+                        "frontend/.env.example",
+                        "frontend/src/api/index.js",
+                    ],
+                },
+            ],
+        }
+
+    def _static_site_plan(self, spec: str) -> dict:
+        return {
+            "template_family": "static-site",
+            "decisions": {
+                "stack": {
+                    "language": "HTML",
+                    "framework": "static-html",
+                    "database": "none",
+                    "frontend": "html",
+                    "styling": "css",
+                },
+                "architecture": (
+                    "A static multi-section site rendered directly in the browser with no backend "
+                    "and no build step."
+                ),
+                "reasoning": (
+                    "Complexity Level 1. This looks like a simple static site, so the smallest "
+                    "correct solution is plain HTML/CSS/JS with no API server and no npm toolchain."
+                ),
+                "directory_structure": (
+                    "/\n"
+                    "├── .gitignore\n"
+                    "├── index.html\n"
+                    "├── styles.css\n"
+                    "├── script.js\n"
+                    "└── README.md\n"
+                ),
+            },
+            "tasks": [
+                {
+                    "id": "task_01",
+                    "name": "Set up static site files",
+                    "description": "Create the base HTML, stylesheet, JavaScript, and README files.",
+                    "agent": "builder",
+                    "specialization": "setup",
+                    "files": [".gitignore", "index.html", "styles.css", "script.js", "README.md"],
+                },
+                {
+                    "id": "task_02",
+                    "name": "Implement marketing page content",
+                    "description": (
+                        "Build the homepage, menu, about, and contact sections in a single static page "
+                        "with mobile-friendly layout and a non-submitting contact form."
+                    ),
+                    "agent": "builder",
+                    "specialization": "frontend",
+                    "files": ["index.html", "styles.css", "script.js"],
+                },
+            ],
+        }
+
+    def _api_only_plan(self, spec: str) -> dict:
+        return {
+            "template_family": "api-only",
+            "decisions": {
+                "stack": {
+                    "language": "Python",
+                    "framework": "FastAPI",
+                    "database": "sqlite3",
+                    "frontend": "none",
+                    "styling": "none",
+                },
+                "architecture": "FastAPI exposes a small JSON API backed by SQLite with no frontend surface.",
+                "reasoning": (
+                    "Complexity Level 2. The requested product shape is an API, so the supported local "
+                    "path is a minimal FastAPI service with a fixed file layout."
+                ),
+                "directory_structure": (
+                    "/\n"
+                    "├── .gitignore\n"
+                    "├── backend/\n"
+                    "│   ├── .env.example\n"
+                    "│   ├── main.py\n"
+                    "│   └── routes/\n"
+                    "└── README.md\n"
+                ),
+            },
+            "tasks": [
+                {
+                    "id": "task_01",
+                    "name": "Set up API project skeleton",
+                    "description": "Create the backend entrypoint, routes package, and project README.",
+                    "agent": "builder",
+                    "specialization": "setup",
+                    "files": ["README.md", ".gitignore", "backend/.env.example", "backend/main.py"],
+                },
+                {
+                    "id": "task_02",
+                    "name": "Implement FastAPI routes and persistence",
+                    "description": (
+                        "Create the JSON endpoints, validation, and SQLite-backed data access for the API."
+                    ),
+                    "agent": "builder",
+                    "specialization": "backend",
+                    "files": ["backend/main.py", "backend/routes/api.py"],
+                },
+                {
+                    "id": "task_03",
+                    "name": "Finalize API integration details",
+                    "description": "Document environment variables and ensure the exposed endpoints are coherent.",
+                    "agent": "builder",
+                    "specialization": "integration",
+                    "files": ["README.md", "backend/.env.example", "backend/main.py"],
+                },
+            ],
+        }
+
+    def _section_text(self, spec: str, header: str) -> str:
+        pattern = rf"^##\s+{re.escape(header)}\s*$"
+        match = re.search(pattern, spec, re.MULTILINE)
+        if not match:
+            return ""
+        start = match.end()
+        remainder = spec[start:]
+        next_header = re.search(r"^##\s+", remainder, re.MULTILINE)
+        block = remainder[: next_header.start()] if next_header else remainder
+        return " ".join(line.strip() for line in block.strip().splitlines() if line.strip())
 
     def _build_plan_prompt(self, spec: str, rules: str, existing_files: str) -> str:
         context_section = ""
