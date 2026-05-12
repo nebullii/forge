@@ -10,6 +10,7 @@ from pathlib import Path
 import yaml
 
 from .policy import write_default_policy
+from .support import is_recommended_ollama_model, is_supported_provider
 
 
 FORGE_DIR = ".forge"
@@ -38,6 +39,13 @@ TEMPLATE_STACKS = {
     "slack-bot":  "Python · slack-bolt · Railway",
     "discord-bot":"Python · discord.py · Railway",
 }
+
+
+def _merge_setup_provider(existing: dict, new_entry: dict) -> dict:
+    """Persist one active provider while preserving unrelated config keys."""
+    merged = dict(existing or {})
+    merged["providers"] = [new_entry]
+    return merged
 
 
 def _interactive_new(default_name=None):
@@ -432,7 +440,7 @@ def cmd_init(args):
 
 
 def cmd_fix(args):
-    """Fix errors — user pastes an error, debug agent fixes the code."""
+    """Fix errors by analyzing a traceback and patching the failing files."""
     from .config import load_config, get_provider_config
     from .providers import create_provider
     from .agents.debug import DebugAgent
@@ -468,17 +476,17 @@ def cmd_fix(args):
         print("Run 'forge setup' to configure an API key.")
         return
 
-    print(f"\nDebug agent analyzing error... ({provider_config})\n")
+    print(f"\nAnalyzing error and generating a targeted fix... ({provider_config})\n")
 
     agent = DebugAgent(provider, project_root)
     try:
         fixes = agent.diagnose_and_fix(error_text, project_root)
     except Exception as e:
-        print(f"Debug agent failed: {e}")
+        print(f"Fix command failed: {e}")
         return
 
     if not fixes:
-        print("Debug agent couldn't produce a fix.")
+        print("No fix could be produced for that error.")
         return
 
     for filepath, content in fixes:
@@ -492,7 +500,7 @@ def cmd_fix(args):
         full_path.write_text(content)
         print(f"  Fixed: {filepath}")
 
-    print(f"\n{len(fixes)} file(s) fixed. Restart your server to test.")
+    print(f"\n{len(fixes)} file(s) updated. Restart your server to test.")
 
 
 def cmd_dev(args):
@@ -553,6 +561,65 @@ def _validate_api_key_format(provider: str, key: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _list_ollama_models(base_url: str = "http://localhost:11434") -> list[dict]:
+    """Return Ollama model metadata from the local server."""
+    import requests
+
+    resp = requests.get(f"{base_url.rstrip('/')}/api/tags", timeout=5)
+    resp.raise_for_status()
+    payload = resp.json()
+    return payload.get("models", [])
+
+
+def _select_ollama_model(default_model: str, base_url: str = "http://localhost:11434") -> tuple[str, str]:
+    """Pick an installed local Ollama model, preferring the requested default."""
+    models = _list_ollama_models(base_url)
+    names = [m.get("model") or m.get("name") for m in models if (m.get("model") or m.get("name"))]
+    if default_model in names:
+        return default_model, ""
+
+    local_names = [
+        (m.get("model") or m.get("name"))
+        for m in models
+        if (m.get("model") or m.get("name")) and not m.get("remote_host")
+    ]
+    if local_names:
+        chosen = local_names[0]
+        note = f"Using installed Ollama model '{chosen}' instead of missing default '{default_model}'."
+        return chosen, note
+
+    return default_model, ""
+
+
+def _provider_preflight(provider_config) -> tuple[bool, str]:
+    """Run a lightweight readiness check for the selected provider."""
+    if provider_config.name == "ollama":
+        return _test_provider_connection(provider_config.name, provider_config.api_key or "", provider_config.model)
+    return True, ""
+
+
+def _apply_model_override(provider_config, config: dict, provider_name: str | None, model: str | None):
+    """Override the selected provider model for a single command."""
+    if not model:
+        return provider_config, config, provider_name
+
+    overridden = type(provider_config)(
+        name=provider_config.name,
+        api_key=provider_config.api_key,
+        model=model,
+        base_url=provider_config.base_url,
+        max_tokens=provider_config.max_tokens,
+        profile="",
+        capabilities=provider_config.capabilities,
+        priority=provider_config.priority,
+        metadata=dict(provider_config.metadata),
+    )
+
+    effective_provider = provider_name or provider_config.name
+    effective_scope = f"{provider_config.name}:{model}"
+    return overridden, config, effective_scope
+
+
 def _test_provider_connection(provider: str, api_key: str, model: str) -> tuple[bool, str]:
     """Make a minimal API call to verify the key works."""
     try:
@@ -575,8 +642,47 @@ def _test_provider_connection(provider: str, api_key: str, model: str) -> tuple[
             )
         elif provider == "ollama":
             import requests
-            resp = requests.get("http://localhost:11434/api/tags", timeout=5)
-            resp.raise_for_status()
+            available = _list_ollama_models("http://localhost:11434")
+            available_names = [
+                item.get("model") or item.get("name")
+                for item in available
+                if (item.get("model") or item.get("name"))
+            ]
+            if available_names and model not in available_names:
+                return False, (
+                    f"Model '{model}' is not installed in Ollama. "
+                    f"Available models: {', '.join(available_names)}"
+                )
+            last_error = ""
+            for timeout_seconds in (30, 60):
+                try:
+                    resp = requests.post(
+                        "http://localhost:11434/api/chat",
+                        json={
+                            "model": model,
+                            "messages": [{"role": "user", "content": "hi"}],
+                            "stream": False,
+                            "options": {"num_predict": 1},
+                        },
+                        timeout=timeout_seconds,
+                    )
+                    if resp.status_code == 404:
+                        resp = requests.post(
+                            "http://localhost:11434/api/generate",
+                            json={
+                                "model": model,
+                                "prompt": "hi",
+                                "stream": False,
+                                "options": {"num_predict": 1},
+                            },
+                            timeout=timeout_seconds,
+                        )
+                    resp.raise_for_status()
+                    break
+                except Exception as exc:
+                    last_error = str(exc)
+            else:
+                return False, last_error
         else:
             return True, "Unknown provider — skipping connection test"
         return True, ""
@@ -623,6 +729,7 @@ def cmd_setup(args):
         return
 
     provider_id, provider_label, default_model, key_url = providers[idx]
+    selected_model = default_model
 
     # Ollama needs no API key
     api_key = ""
@@ -640,11 +747,18 @@ def cmd_setup(args):
         except KeyboardInterrupt:
             print("\nCancelled.")
             return
+    else:
+        try:
+            selected_model, model_note = _select_ollama_model(default_model)
+            if model_note:
+                print(f"  {model_note}")
+        except Exception:
+            selected_model = default_model
 
     # Test connection
     print()
     print("  Testing connection...", end="", flush=True)
-    ok, err = _test_provider_connection(provider_id, api_key, default_model)
+    ok, err = _test_provider_connection(provider_id, api_key, selected_model)
     if ok:
         print(" OK")
     else:
@@ -661,18 +775,14 @@ def cmd_setup(args):
     # Build and save config
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     existing = load_config() if CONFIG_FILE.exists() else {}
-    existing_providers = existing.get("providers", [])
 
-    # Remove any existing entry for this provider
-    existing_providers = [p for p in existing_providers if p.get("name") != provider_id]
-
-    new_entry: dict = {"name": provider_id, "model": default_model}
+    new_entry: dict = {"name": provider_id, "model": selected_model}
     if provider_id == "ollama":
         new_entry["base_url"] = "http://localhost:11434"
     else:
         new_entry["api_key"] = api_key
 
-    config_to_save = {"providers": [new_entry] + existing_providers}
+    config_to_save = _merge_setup_provider(existing, new_entry)
     save_config(config_to_save)
 
     print()
@@ -709,10 +819,25 @@ def cmd_build(args):
             print(f"Error: {e2}")
             sys.exit(1)
 
+    provider_config, config, provider_scope = _apply_model_override(
+        provider_config,
+        config,
+        getattr(args, 'provider', None),
+        getattr(args, 'model', None),
+    )
+
     feature = getattr(args, 'feature', None)
     no_review = getattr(args, 'no_review', False)
     verbose = getattr(args, 'verbose', False)
     approval_mode = getattr(args, 'approval_mode', None)
+
+    ok, err = _provider_preflight(provider_config)
+    if not ok:
+        print(f"Provider preflight failed for {provider_config}:")
+        print(f"  {err}")
+        if provider_config.name == "ollama":
+            print("  Run 'forge doctor -p ollama' for local model diagnostics.")
+        sys.exit(1)
 
     ui = BuildUI(verbose=verbose)
 
@@ -725,6 +850,7 @@ def cmd_build(args):
         review=not no_review,
         verbose=verbose,
         approval_mode=approval_mode,
+        provider_scope=provider_scope,
         config_dict=config,
         ui=ui,
     )
@@ -737,6 +863,73 @@ def cmd_build(args):
     except Exception as e:
         print(f"Build failed: {e}")
         sys.exit(1)
+
+
+def cmd_doctor(args):
+    """Check project and provider readiness before running a build."""
+    from .config import CONFIG_FILE, load_config, get_provider_config
+
+    provider_name = getattr(args, "provider", None)
+    forge_path = Path(FORGE_DIR)
+
+    print("Forge doctor")
+    print("")
+
+    if forge_path.exists():
+        print(f"[ok] project: {forge_path.resolve()}")
+    else:
+        print("[warn] project: no .forge/ directory in the current working directory")
+
+    if CONFIG_FILE.exists():
+        print(f"[ok] config: {CONFIG_FILE}")
+    else:
+        print(f"[warn] config: missing {CONFIG_FILE}")
+        return
+
+    config = load_config()
+    try:
+        provider_config = get_provider_config(config, provider_name)
+    except Exception as exc:
+        print(f"[fail] provider resolution: {exc}")
+        return
+
+    provider_config, config, _provider_scope = _apply_model_override(
+        provider_config,
+        config,
+        provider_name,
+        getattr(args, "model", None),
+    )
+
+    print(f"[ok] provider: {provider_config}")
+    if is_supported_provider(provider_config.name):
+        print("[ok] support tier: provider is in the supported matrix")
+    else:
+        print("[warn] support tier: provider is outside the supported matrix")
+
+    if provider_config.name == "ollama":
+        try:
+            models = _list_ollama_models(provider_config.base_url or "http://localhost:11434")
+            installed = [
+                (m.get("model") or m.get("name"))
+                for m in models
+                if (m.get("model") or m.get("name"))
+            ]
+            print(f"[ok] ollama tags: {len(installed)} model(s) visible")
+            if installed:
+                print(f"      installed: {', '.join(installed)}")
+            if is_recommended_ollama_model(provider_config.model):
+                print("[ok] ollama model: selected model is in the recommended local set")
+            else:
+                print("[warn] ollama model: selected model is not in the recommended local set")
+        except Exception as exc:
+            print(f"[fail] ollama tags: {exc}")
+            return
+
+    ok, err = _provider_preflight(provider_config)
+    if ok:
+        print("[ok] provider preflight: generation path is reachable")
+    else:
+        print(f"[fail] provider preflight: {err}")
 
 
 def cmd_contracts(args):
@@ -777,7 +970,7 @@ def cmd_contracts(args):
 
 def cmd_config(args):
     """Manage Forge configuration."""
-    from .config import CONFIG_FILE, ensure_config
+    from .config import CONFIG_FILE, ensure_config, detect_ollama_models, pick_local_model
 
     config_cmd = getattr(args, 'config_cmd', 'show')
 
@@ -788,6 +981,20 @@ def cmd_config(args):
             print(f"No config found at {CONFIG_FILE}")
             print("Run 'forge config init' to create one.")
     elif config_cmd == "init":
+        # Show the user what we detected before creating the config
+        if not CONFIG_FILE.exists():
+            installed = detect_ollama_models()
+            if installed:
+                picked = pick_local_model(installed)
+                print(f"Detected Ollama with {len(installed)} model(s) installed.")
+                print(f"  Picked: {picked}")
+                print(f"  Available: {', '.join(installed[:6])}{' ...' if len(installed) > 6 else ''}")
+                print("Writing a local-first config (cloud providers remain as fallbacks).")
+                print("")
+            else:
+                print("No local Ollama detected — writing a cloud-first config.")
+                print("Start Ollama and re-run 'forge config init' to switch to local-first.")
+                print("")
         ensure_config()
         print(f"Config at: {CONFIG_FILE}")
     elif config_cmd == "path":
@@ -896,7 +1103,7 @@ def main():
     dev_parser.set_defaults(func=cmd_dev)
 
     # forge fix
-    fix_parser = subparsers.add_parser("fix", help="Fix errors — paste an error message and the debug agent fixes it")
+    fix_parser = subparsers.add_parser("fix", help="Fix errors by analyzing a traceback and patching the failing files")
     fix_parser.add_argument("error", nargs="?", help="Error message (or omit to paste interactively)")
     fix_parser.set_defaults(func=cmd_fix)
 
@@ -912,12 +1119,19 @@ def main():
     # forge build
     build_parser = subparsers.add_parser("build", help="Build project using AI agents")
     build_parser.add_argument("--provider", "-p", help="AI provider (anthropic, openai, together, ollama)")
+    build_parser.add_argument("--model", "-m", help="Override the provider model for this run")
     build_parser.add_argument("--feature", "-f", help="Add a specific feature (incremental build)")
     build_parser.add_argument("--no-review", action="store_true", help="Skip review phase")
     build_parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     build_parser.add_argument("--approval-mode", choices=["off", "interactive"],
                               help="Override .forge/policy.yaml approval mode for this build")
     build_parser.set_defaults(func=cmd_build)
+
+    # forge doctor
+    doctor_parser = subparsers.add_parser("doctor", help="Check project and provider readiness")
+    doctor_parser.add_argument("--provider", "-p", help="Provider to check (anthropic, openai, together, ollama)")
+    doctor_parser.add_argument("--model", "-m", help="Override the provider model for this check")
+    doctor_parser.set_defaults(func=cmd_doctor)
 
     # forge setup
     setup_parser = subparsers.add_parser("setup", help="Interactive setup wizard (API key + provider)")
