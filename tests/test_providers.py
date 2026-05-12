@@ -5,7 +5,13 @@ import types
 
 import pytest
 from unittest.mock import MagicMock, patch
-from src.providers.base import BaseProvider, ProviderConfig
+from src.providers.base import (
+    BaseProvider,
+    ProviderConfig,
+    classify_error,
+    compute_backoff,
+    MAX_RETRY_WAIT,
+)
 from src.providers.ollama import OllamaProvider
 
 
@@ -77,6 +83,85 @@ class TestRetryLogic:
         with pytest.raises(RuntimeError, match="rate limit"):
             p.chat_with_retry([{"role": "user", "content": "hi"}], max_retries=3)
         assert p._call_count == 3
+
+    def test_retries_on_connection_refused(self):
+        # Ollama failure mode: server starting up
+        p = MockProvider(
+            errors=[ConnectionError("Connection refused")],
+            responses=["ok"],
+        )
+        result = p.chat_with_retry([{"role": "user", "content": "hi"}])
+        assert result == "ok"
+        assert p._call_count == 2
+
+    def test_retries_on_model_loading(self):
+        # Ollama failure mode: model still loading into VRAM
+        p = MockProvider(
+            errors=[RuntimeError("model is loading")],
+            responses=["ok"],
+        )
+        result = p.chat_with_retry([{"role": "user", "content": "hi"}])
+        assert result == "ok"
+
+    def test_no_retry_on_oom(self):
+        # Ollama failure mode: OOM — retrying same prompt won't help
+        p = MockProvider(errors=[RuntimeError("CUDA out of memory")])
+        with pytest.raises(RuntimeError, match="out of memory"):
+            p.chat_with_retry([{"role": "user", "content": "hi"}])
+        assert p._call_count == 1
+
+    def test_no_retry_on_model_not_found(self):
+        p = MockProvider(errors=[RuntimeError("Ollama model 'foo' is not installed")])
+        with pytest.raises(RuntimeError, match="not installed"):
+            p.chat_with_retry([{"role": "user", "content": "hi"}])
+        assert p._call_count == 1
+
+    def test_no_retry_on_context_overflow(self):
+        # Surfaces early so caller can trim or downgrade model
+        p = MockProvider(errors=[RuntimeError("context length exceeded")])
+        with pytest.raises(RuntimeError, match="context length"):
+            p.chat_with_retry([{"role": "user", "content": "hi"}])
+        assert p._call_count == 1
+
+
+class TestErrorClassifier:
+    def test_classifies_retryable(self):
+        assert classify_error(RuntimeError("Rate limit exceeded")) == "retryable"
+        assert classify_error(RuntimeError("connection refused")) == "retryable"
+        assert classify_error(RuntimeError("Server overloaded (529)")) == "retryable"
+        assert classify_error(RuntimeError("model is loading into memory")) == "retryable"
+        assert classify_error(RuntimeError("HTTP 503")) == "retryable"
+
+    def test_classifies_non_retryable(self):
+        assert classify_error(RuntimeError("CUDA out of memory")) == "non_retryable"
+        assert classify_error(RuntimeError("invalid api key")) == "non_retryable"
+        assert classify_error(RuntimeError("model not found")) == "non_retryable"
+        assert classify_error(RuntimeError("context length exceeded")) == "non_retryable"
+
+    def test_unknown_treated_as_non_retryable(self):
+        # Unknown failures should fail fast to avoid hiding bugs in backoff loops
+        assert classify_error(RuntimeError("totally novel error")) == "unknown"
+
+
+class TestBackoff:
+    def test_backoff_caps_at_max(self):
+        # attempt=10 → 1024s without cap; should be capped
+        for _ in range(20):
+            wait = compute_backoff(10, base=1.0, jitter=True)
+            assert wait <= MAX_RETRY_WAIT
+
+    def test_backoff_grows_exponentially(self):
+        # With jitter off, exact powers of 2
+        assert compute_backoff(0, jitter=False) == 1.0
+        assert compute_backoff(1, jitter=False) == 2.0
+        assert compute_backoff(2, jitter=False) == 4.0
+        assert compute_backoff(3, jitter=False) == 8.0
+
+    def test_backoff_with_jitter_within_range(self):
+        # Jitter scales the wait by [0.5, 1.0)
+        for _ in range(20):
+            wait = compute_backoff(2, base=1.0, jitter=True)
+            assert 2.0 <= wait <= 4.0
 
 
 def test_ollama_provider_falls_back_to_generate_when_chat_404(monkeypatch):

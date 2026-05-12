@@ -52,6 +52,11 @@ class BuildUI:
         print(f"  {label}{elapsed}")
         print("")
 
+    def note(self, message: str, indent: str = "    "):
+        """Print an informational note aligned with the current phase/task output."""
+        self.spinner_stop()
+        print(f"{indent}{message}")
+
     # ------------------------------------------------------------------
     # Task list
     # ------------------------------------------------------------------
@@ -68,11 +73,13 @@ class BuildUI:
         self._task_start_times[name] = time.monotonic()
         self.spinner_start(f"    [>] {name}")
 
-    def task_done(self, name: str, files: list[str] = None):
+    def task_done(self, name: str, files: list[str] = None, usage: dict | None = None):
         """Stop the spinner and print a completed task line."""
         self.spinner_stop()
         elapsed = self._task_elapsed(name)
         print(f"    [+] {name}{elapsed}")
+        if usage:
+            print(f"        usage: {format_usage_summary(usage)}")
         for f in (files or []):
             print(f"        + {f}")
 
@@ -205,6 +212,16 @@ def _ext_label(ext: str) -> str:
 def _error_hint(error: str) -> str:
     """Return a short actionable hint based on common error patterns."""
     err_lower = error.lower()
+    if "out of memory" in err_lower or "cannot allocate" in err_lower:
+        return "Model ran out of memory — try a smaller model (e.g. qwen2.5:3b)"
+    if "not installed" in err_lower or "model not found" in err_lower:
+        return "Run `ollama pull <model>` or pick another with `forge doctor`"
+    if "context length" in err_lower or "maximum context" in err_lower:
+        return "Prompt too large — try `forge build --feature` or a larger-context model"
+    if "model is loading" in err_lower or "loading model" in err_lower:
+        return "Ollama is still loading the model — give it ~30s and retry"
+    if "connection refused" in err_lower:
+        return "Local server unreachable — is Ollama running? (`ollama serve`)"
     if "token" in err_lower and ("limit" in err_lower or "exceed" in err_lower):
         return "Try `forge build --feature` to build incrementally"
     if "rate limit" in err_lower or "429" in err_lower:
@@ -214,3 +231,67 @@ def _error_hint(error: str) -> str:
     if "connection" in err_lower or "timeout" in err_lower:
         return "Network issue — check your connection and retry"
     return ""
+
+
+def format_usage_summary(usage: dict) -> str:
+    """Format provider usage into a compact human-readable line."""
+    if not usage:
+        return "no usage data"
+
+    parts: list[str] = []
+    prompt_tokens = usage.get("prompt_eval_count")
+    completion_tokens = usage.get("eval_count")
+    if prompt_tokens is not None or completion_tokens is not None:
+        left = f"prompt {prompt_tokens}" if prompt_tokens is not None else None
+        right = f"completion {completion_tokens}" if completion_tokens is not None else None
+        token_bits = [item for item in (left, right) if item]
+        if token_bits:
+            parts.append(", ".join(token_bits) + " tok")
+
+    total_duration = usage.get("total_duration")
+    load_duration = usage.get("load_duration")
+    eval_duration = usage.get("eval_duration")
+    duration_bits: list[str] = []
+    if total_duration is not None:
+        duration_bits.append(f"total {_format_ns(total_duration)}")
+    if load_duration is not None:
+        duration_bits.append(f"load {_format_ns(load_duration)}")
+    if eval_duration is not None:
+        duration_bits.append(f"eval {_format_ns(eval_duration)}")
+    if duration_bits:
+        parts.append(", ".join(duration_bits))
+
+    size_vram = usage.get("size_vram_bytes")
+    size_total = usage.get("size_bytes")
+    memory_bits: list[str] = []
+    if size_vram is not None:
+        memory_bits.append(f"vram {_format_bytes(size_vram)}")
+    if size_total is not None:
+        memory_bits.append(f"model {_format_bytes(size_total)}")
+    processor = usage.get("processor")
+    if processor:
+        memory_bits.append(str(processor))
+    if memory_bits:
+        parts.append(", ".join(memory_bits))
+
+    return " | ".join(parts) if parts else "no usage data"
+
+
+def _format_ns(value: int | float) -> str:
+    seconds = float(value) / 1_000_000_000
+    if seconds >= 60:
+        return f"{seconds / 60:.1f}m"
+    if seconds >= 1:
+        return f"{seconds:.1f}s"
+    return f"{seconds * 1000:.0f}ms"
+
+
+def _format_bytes(value: int | float) -> str:
+    size = float(value)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            if unit == "B":
+                return f"{int(size)}{unit}"
+            return f"{size:.1f}{unit}"
+        size /= 1024
+    return f"{size:.1f}TB"
