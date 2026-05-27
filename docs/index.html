@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Forge — Spec-driven software generation</title>
+  <title>Forge — Spec-driven software generation with an API plane</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -174,6 +174,42 @@
     .cols-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; align-items: start; }
     .cols-3 { display: grid; grid-template-columns: repeat(3,1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 
+    /* ── API PLANE ── */
+    .endpoint-grid {
+      display: grid; grid-template-columns: repeat(2, minmax(0,1fr));
+      gap: 1px; background: var(--border);
+      border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+    }
+    .endpoint {
+      background: var(--bg); padding: 14px 16px;
+      display: grid; grid-template-columns: 48px 1fr; gap: 10px;
+      align-items: baseline;
+    }
+    .method {
+      font-family: var(--mono); font-size: 10px; font-weight: 700;
+      color: var(--accent); letter-spacing: .3px;
+    }
+    .path {
+      font-family: var(--mono); font-size: 11.5px; color: var(--text);
+      word-break: break-word;
+    }
+    .endpoint p {
+      grid-column: 2; font-size: 12px; line-height: 1.45; color: var(--muted);
+      margin-top: -2px;
+    }
+    .flow {
+      display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+      margin-top: 16px; font-family: var(--mono); font-size: 11.5px;
+      color: var(--sub);
+    }
+    .flow span {
+      border: 1px solid var(--border); background: var(--surface);
+      border-radius: 4px; padding: 4px 7px;
+    }
+    .flow b {
+      color: var(--dim); font-weight: 400;
+    }
+
     /* ── STEPS ── */
     .steps { display: flex; flex-direction: column; gap: 0; }
     .step {
@@ -281,6 +317,8 @@
       font-size: 13px; color: var(--sub); margin-top: 20px;
     }
     .tip b { color: var(--text); font-weight: 500; }
+    .tip a { color: var(--accent); text-decoration: none; }
+    .tip a:hover { text-decoration: underline; }
 
     /* ── CTA BAND ── */
     .cta-band {
@@ -315,6 +353,7 @@
       .hero { grid-template-columns: 1fr; gap: 36px; }
       .cols-2 { grid-template-columns: 1fr; gap: 32px; }
       .cols-3 { grid-template-columns: 1fr; }
+      .endpoint-grid { grid-template-columns: 1fr; }
     }
     @media (max-width: 600px) {
       .nav-links { display: none; }
@@ -330,6 +369,7 @@
     <a class="nav-logo" href="#">forge</a>
     <div class="nav-links">
       <a href="#how-it-works">How it works</a>
+      <a href="#api-plane">API plane</a>
       <a href="#agents">Agents</a>
       <a href="#templates">Templates</a>
     </div>
@@ -345,29 +385,30 @@
 <div class="hero">
   <div class="hero-left">
     <p class="hero-eyebrow">Open source &middot; MIT license</p>
-    <h1>Spec-driven code generation with a <b>deterministic control plane</b></h1>
+    <h1>Spec-driven code generation with a <b>deterministic API plane</b></h1>
     <p class="hero-desc">
       Write a markdown spec. Run <code style="font-family:var(--mono);font-size:13px;color:var(--text);">forge build</code>.
-      Forge plans the build, runs builder specializations where they are safe to
-      parallelize, persists machine-readable artifacts, and ends with review plus
-      deterministic verification.
+      Forge compiles typed Spec API primitives into a task graph, routes work to
+      specialist models, and exposes builds, tasks, contracts, artifacts, events,
+      model routing, and verification through a local REST API.
     </p>
     <div class="hero-actions">
       <a class="btn btn-primary" href="#how-it-works">Get started</a>
       <a class="btn btn-ghost" href="https://github.com/nebullii/forge" target="_blank">View source</a>
+      <a class="btn btn-ghost" href="spec-api.html">Spec API docs</a>
     </div>
     <div class="hero-stats">
       <div>
-        <div class="stat-val">4</div>
-        <div class="stat-label">Workflow layers</div>
+        <div class="stat-val">0.1</div>
+        <div class="stat-label">Spec API version</div>
       </div>
       <div>
-        <div class="stat-val">8</div>
-        <div class="stat-label">Project templates</div>
+        <div class="stat-val">20+</div>
+        <div class="stat-label">REST endpoints</div>
       </div>
       <div>
-        <div class="stat-val">5+</div>
-        <div class="stat-label">LLM providers</div>
+        <div class="stat-val">SSE</div>
+        <div class="stat-label">Event streams</div>
       </div>
     </div>
   </div>
@@ -375,50 +416,36 @@
   <div class="terminal">
     <div class="term-bar">
       <div class="tc"></div><div class="tc"></div><div class="tc"></div>
-      <span class="term-title">my-app — forge build</span>
+      <span class="term-title">my-app — forge serve</span>
     </div>
     <div class="term-body">
-      <div><span class="t-ps">$</span> <span class="t-cmd">forge build</span></div>
+      <div><span class="t-ps">$</span> <span class="t-cmd">forge serve --port 4123</span></div>
       <br>
-      <div class="t-ph">Phase 1: Planning</div>
-      <div class="t-out">&nbsp; 5 tasks planned</div>
-      <div class="t-out">&nbsp;&nbsp;&nbsp; task_01 &nbsp;Set up project structure</div>
-      <div class="t-out">&nbsp;&nbsp;&nbsp; task_02 &nbsp;User authentication API</div>
-      <div class="t-out">&nbsp;&nbsp;&nbsp; task_03 &nbsp;Dashboard + data endpoints</div>
-      <div class="t-out">&nbsp;&nbsp;&nbsp; task_04 &nbsp;React frontend with auth flow</div>
-      <div class="t-out">&nbsp;&nbsp;&nbsp; task_05 &nbsp;GitHub Actions + Dockerfile</div>
+      <div class="t-ph">Forge API plane listening on 127.0.0.1:4123</div>
+      <div class="t-out">&nbsp; GET&nbsp; /api/health</div>
+      <div class="t-out">&nbsp; POST /api/spec/validate</div>
+      <div class="t-out">&nbsp; POST /api/spec/compile</div>
+      <div class="t-out">&nbsp; POST /api/builds</div>
+      <div class="t-out">&nbsp; GET&nbsp; /api/builds</div>
+      <div class="t-out">&nbsp; GET&nbsp; /api/tasks</div>
+      <div class="t-out">&nbsp; GET&nbsp; /api/contracts</div>
+      <div class="t-out">&nbsp; GET&nbsp; /api/artifacts</div>
+      <div class="t-out">&nbsp; GET&nbsp; /api/events/stream</div>
       <br>
-      <div class="t-ph">Phase 2: Building</div>
-      <div class="t-out">&nbsp; Builder lanes: {setup, backend, frontend, ci, integration}</div>
+      <div><span class="t-ps">$</span> <span class="t-cmd">curl -s -X POST http://127.0.0.1:4123/api/builds</span></div>
       <br>
-      <div class="t-out">&nbsp; [1/5] Set up project structure</div>
-      <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-file">+ requirements.txt</span></div>
-      <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-file">+ main.py</span></div>
-      <div class="t-out">&nbsp; [2/5] User authentication API &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="t-ag">&#9474;</span></div>
-      <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-file">+ src/auth.py</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="t-ag">&#9474;</span> <span class="t-out">[5/5] GitHub Actions</span></div>
-      <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-file">+ src/routes/auth.py</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="t-ag">&#9474;</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-file">+ .github/workflows/ci.yml</span></div>
-      <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-out">3 API contracts registered</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="t-ag">&#9474;</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-file">+ Dockerfile</span></div>
-      <div class="t-out">&nbsp; [3/5] Dashboard + data endpoints</div>
-      <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-file">+ src/routes/dashboard.py</span></div>
-      <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-file">+ src/services/data.py</span></div>
-      <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-out">2 API contracts registered</span></div>
-      <div class="t-out">&nbsp; [4/5] React frontend with auth flow</div>
-      <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-out">Contracts: GET /auth/me, POST /auth/login, GET /dashboard, ...</span></div>
-      <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-file">+ frontend/src/pages/Login.jsx</span></div>
-      <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-file">+ frontend/src/pages/Dashboard.jsx</span></div>
+      <div class="t-ph">Build job</div>
+      <div class="t-out">&nbsp; id: build_20260527_142830</div>
+      <div class="t-out">&nbsp; status: running</div>
+      <div class="t-out">&nbsp; source: compiled Spec API task graph</div>
       <br>
-      <div class="t-ph">Phase 3: Review</div>
-      <div class="t-out">&nbsp; Contract validation: 1 issue</div>
-      <div class="t-out">&nbsp;&nbsp;&nbsp; POST /auth/login has no auth configured</div>
-      <div class="t-out">&nbsp; Reworking src/auth.py <span class="t-ag">→ builder/backend</span></div>
-      <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="t-file">~ src/auth.py (fixed by builder/backend)</span></div>
-      <div class="t-out">&nbsp; Review passed.</div>
+      <div><span class="t-ps">$</span> <span class="t-cmd">curl -N http://127.0.0.1:4123/api/events/stream?once=true</span></div>
       <br>
-      <div class="t-ph">Phase 4: Verification</div>
-      <div class="t-out">&nbsp; python_syntax: passed</div>
-      <div class="t-out">&nbsp; contract_consistency: passed</div>
+      <div class="t-out">&nbsp; event: task.started backend.clients</div>
+      <div class="t-out">&nbsp; event: contracts.updated 5 endpoints</div>
+      <div class="t-out">&nbsp; event: verification.passed</div>
       <br>
-      <div class="t-ok">Build complete. 11 files written. Artifacts and contracts saved.</div>
+      <div class="t-ok">Everything is queryable: state, contracts, artifacts, audit, models.</div>
     </div>
   </div>
 </div>
@@ -433,7 +460,7 @@
     <div>
       <p class="label">How it works</p>
       <h2>Three steps to a working codebase</h2>
-      <p class="desc">No prompt engineering. No copy-pasting. Describe what you want and run one command.</p>
+      <p class="desc">No prompt engineering. No copy-pasting. Describe what you want, validate it locally, and run the build.</p>
 
       <div class="steps">
         <div class="step">
@@ -446,15 +473,15 @@
         <div class="step">
           <div class="step-n">02</div>
           <div>
-            <h3>Write a spec</h3>
-            <p>Edit <code style="font-family:var(--mono);font-size:11px;background:var(--raised);border:1px solid var(--border);padding:1px 4px;border-radius:3px;">.forge/spec.md</code> in plain English. Describe what the app does, its features, stack preferences, and non-goals.</p>
+            <h3>Write a Spec API file</h3>
+            <p>Edit <code style="font-family:var(--mono);font-size:11px;background:var(--raised);border:1px solid var(--border);padding:1px 4px;border-radius:3px;">.forge/spec.md</code> with typed primitives for models, APIs, UI bindings, tests, and deploy targets.</p>
           </div>
         </div>
         <div class="step">
           <div class="step-n">03</div>
           <div>
-            <h3>Build</h3>
-            <p>Run <code style="font-family:var(--mono);font-size:11px;background:var(--raised);border:1px solid var(--border);padding:1px 4px;border-radius:3px;">forge build</code>. The pipeline plans, builds through specialization lanes, writes files, runs review, and finishes with deterministic verification.</p>
+            <h3>Compile and build</h3>
+            <p>Run <code style="font-family:var(--mono);font-size:11px;background:var(--raised);border:1px solid var(--border);padding:1px 4px;border-radius:3px;">forge spec compile</code> or <code style="font-family:var(--mono);font-size:11px;background:var(--raised);border:1px solid var(--border);padding:1px 4px;border-radius:3px;">forge build</code>. Forge creates the task graph locally, routes each task, and verifies the result.</p>
           </div>
         </div>
       </div>
@@ -466,33 +493,122 @@
         <div class="specbox-body">
 <span class="h"># Project: Task Tracker</span>
 
-<span class="h">## What</span>
-A web app for managing personal tasks
-with user accounts.
+<span class="h">.project</span>
+  spec_api_version: 0.1
+  type: web_app
+  stack: react_fastapi_sqlite
 
-<span class="h">## Features</span>
-- Email + password login (JWT)
-- Create, complete, and delete tasks
-- Tasks belong to the logged-in user
-- Dashboard: pending vs completed
+<span class="h">.db.model Task</span>
+  fields:
+    title: string required
+    completed: boolean
 
-<span class="h">## Stack</span>
-React + Vite, FastAPI, SQLite
+<span class="h">.api.resource tasks</span>
+  model: Task
+  actions: list, create, update, delete
+  auth: required
 
-<span class="h">## Non-goals</span>
-No team features. No due dates.
-No notifications.
+<span class="h">.ui.table task_list</span>
+  source: GET /api/tasks
+  columns: title, completed
         </div>
       </div>
 
       <div class="tip" style="margin-top:16px;">
-        <b>Non-goals prevent scope creep.</b> Forge follows your constraints exactly — list what you don't want to keep the output focused.
+        <b>Spec API builds skip broad planning.</b> Forge parses these primitives and compiles deterministic task IDs before any model is called. See the <a href="spec-api.html">Spec API reference</a>.
       </div>
 
       <div class="code" style="margin-top:16px;">
-<span class="ps">$</span> forge build                         <span class="cm"># planner → builder → reviewer → verifier</span>
-<span class="ps">$</span> forge build --feature "add JWT refresh tokens"
-<span class="ps">$</span> forge dev                           <span class="cm"># run locally</span>
+<span class="ps">$</span> forge spec validate
+<span class="ps">$</span> forge spec compile --output .forge/compiled-spec.json
+<span class="ps">$</span> forge build -p ollama
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<hr />
+
+
+<!-- API PLANE -->
+<div class="section" id="api-plane">
+  <div class="cols-2">
+
+    <div>
+      <p class="label">API plane</p>
+      <h2>Operate Forge through local REST endpoints</h2>
+      <p class="desc">Run <code style="font-family:var(--mono);font-size:11px;background:var(--raised);border:1px solid var(--border);padding:1px 4px;border-radius:3px;">forge serve</code> to expose the same build machinery behind a JSON API. External tools can validate specs, launch builds, inspect task state, stream events, route model calls, export contracts, and run deterministic verification.</p>
+
+      <div class="tip" style="margin-top:-12px; margin-bottom:24px;">
+        <b>CLI and API share state.</b> <code style="font-family:var(--mono);font-size:11px;">forge build</code> and <code style="font-family:var(--mono);font-size:11px;">POST /api/builds</code> operate on the same project files under <code style="font-family:var(--mono);font-size:11px;">.forge/</code>.
+      </div>
+
+      <div class="steps">
+        <div class="step">
+          <div class="step-n">01</div>
+          <div>
+            <h3>Validate before work starts</h3>
+            <p><code style="font-family:var(--mono);font-size:11px;">POST /api/spec/validate</code> and <code style="font-family:var(--mono);font-size:11px;">POST /api/spec/compile</code> turn markdown primitives into diagnostics and task graphs.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-n">02</div>
+          <div>
+            <h3>Control builds and tasks</h3>
+            <p><code style="font-family:var(--mono);font-size:11px;">POST /api/builds</code>, <code style="font-family:var(--mono);font-size:11px;">GET /api/tasks</code>, task run, and task retry endpoints make builds scriptable.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-n">03</div>
+          <div>
+            <h3>Observe every artifact</h3>
+            <p>Contracts, artifacts, events, audit logs, model health, and OpenAPI export stay queryable while the build runs.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="flow" aria-label="Forge API flow">
+        <span>.forge/spec.md</span><b>→</b>
+        <span>Spec compiler</span><b>→</b>
+        <span>Task graph</span><b>→</b>
+        <span>Build jobs</span><b>→</b>
+        <span>Contracts + events + artifacts</span>
+      </div>
+    </div>
+
+    <div>
+      <div class="code" style="margin-bottom:16px;">
+<span class="ps">$</span> forge serve --port 4123
+<span class="ps">$</span> curl -s http://127.0.0.1:4123/api/health
+<span class="ps">$</span> curl -s -X POST http://127.0.0.1:4123/api/builds
+<span class="ps">$</span> curl -N http://127.0.0.1:4123/api/events/stream?once=true
+      </div>
+
+      <div class="code" style="margin-bottom:16px;">
+{
+  "status": "accepted",
+  "job": {
+    "id": "7f3a91c2d0",
+    "kind": "build",
+    "status": "queued"
+  }
+}
+      </div>
+
+      <div class="endpoint-grid">
+        <div class="endpoint"><span class="method">POST</span><span class="path">/api/spec/validate</span><p>Parse Spec API directives and return diagnostics.</p></div>
+        <div class="endpoint"><span class="method">POST</span><span class="path">/api/spec/compile</span><p>Create a deterministic task graph.</p></div>
+        <div class="endpoint"><span class="method">POST</span><span class="path">/api/builds</span><p>Start a build job from the current project.</p></div>
+        <div class="endpoint"><span class="method">GET</span><span class="path">/api/tasks</span><p>Inspect task state and dependencies.</p></div>
+        <div class="endpoint"><span class="method">POST</span><span class="path">/api/tasks/{id}/run</span><p>Run a single dependency-ready task.</p></div>
+        <div class="endpoint"><span class="method">POST</span><span class="path">/api/tasks/{id}/retry</span><p>Retry a failed task with the same controls.</p></div>
+        <div class="endpoint"><span class="method">GET</span><span class="path">/api/contracts</span><p>Read backend API, model, and event contracts.</p></div>
+        <div class="endpoint"><span class="method">GET</span><span class="path">/api/contracts/openapi</span><p>Export current API contracts as OpenAPI.</p></div>
+        <div class="endpoint"><span class="method">POST</span><span class="path">/api/verify</span><p>Run deterministic verification checks.</p></div>
+        <div class="endpoint"><span class="method">POST</span><span class="path">/api/models/route</span><p>Resolve the configured model chain for a role.</p></div>
+        <div class="endpoint"><span class="method">GET</span><span class="path">/api/events/stream</span><p>Stream build events over Server-Sent Events.</p></div>
+        <div class="endpoint"><span class="method">GET</span><span class="path">/api/audit</span><p>Inspect control-plane and build audit logs.</p></div>
       </div>
     </div>
 
@@ -509,10 +625,10 @@ No notifications.
     <div>
       <p class="label">Agent pipeline</p>
       <h2>Four layers, one workflow</h2>
-      <p class="desc">Forge passes machine-readable artifacts between planning, building, review, and verification. The control plane stays small, while builder specializations handle the implementation slices.</p>
+      <p class="desc">Forge passes machine-readable artifacts between Spec API compilation, building, review, and verification. The API plane stays small, while builder specializations handle the implementation slices.</p>
 
       <div class="pipe">
-        <div class="pipe-row"><span class="pn">1</span><span class="pname">Planner</span><span class="pdesc">&ensp;spec → stack decisions + task plan</span></div>
+        <div class="pipe-row"><span class="pn">1</span><span class="pname">Spec compiler</span><span class="pdesc">&ensp;primitives → deterministic task graph</span></div>
         <div class="pipe-row">
           <span class="pn">2</span>
           <div>
@@ -530,7 +646,7 @@ No notifications.
       </div>
 
       <div class="tip" style="margin-top:20px;">
-        <b>ArtifactBus + ArtifactStore + ContractRegistry</b> — Forge persists typed artifacts (task plans, build outputs, review findings, verification results) to a shared thread-safe store and durable `.forge/` snapshots. Frontend reads exact endpoint shapes from backend contracts.
+        <b>ArtifactBus + ArtifactStore + ContractRegistry</b> — Forge persists typed artifacts (task graphs, build outputs, review findings, verification results) to a shared thread-safe store and durable `.forge/` snapshots. Frontend reads exact endpoint shapes from backend contracts.
       </div>
       <div class="tip" style="margin-top:10px;">
         <b>Agentic Firewall</b> — every write is validated before touching disk. Agents cannot write outside the project root, touch <code style="font-family:var(--mono);font-size:11px;">.env</code>, or embed <code style="font-family:var(--mono);font-size:11px;">eval()</code>. All decisions are logged.
@@ -545,7 +661,7 @@ No notifications.
         <tbody>
           <tr>
             <td><span class="aname">planner</span></td>
-            <td>Reads spec and rules, decides tech stack, and emits ordered builder tasks plus stack decisions.</td>
+            <td>Still supports legacy free-form specs. Spec API projects use the deterministic compiler before model execution.</td>
           </tr>
           <tr>
             <td><span class="aname">builder</span></td>
@@ -613,6 +729,13 @@ No notifications.
         <div class="step" style="padding:18px 0;">
           <div class="step-n" style="padding-top:2px; color:var(--dim);">—</div>
           <div>
+            <h3>Local API plane</h3>
+            <p>Builds, tasks, contracts, artifacts, audit logs, model routing, and event streams are available through <code style="font-family:var(--mono);font-size:11px;">forge serve</code>.</p>
+          </div>
+        </div>
+        <div class="step" style="padding:18px 0;">
+          <div class="step-n" style="padding-top:2px; color:var(--dim);">—</div>
+          <div>
             <h3>Parallel execution</h3>
             <p>Independent builder lanes like <code style="font-family:var(--mono);font-size:11px;">backend</code>, <code style="font-family:var(--mono);font-size:11px;">ci</code>, and <code style="font-family:var(--mono);font-size:11px;">deploy</code> run concurrently through a dependency-aware scheduler.</p>
           </div>
@@ -662,7 +785,7 @@ No notifications.
   <div class="cta-inner">
     <div class="cta-text">
       <h2>Get started in under a minute</h2>
-      <p>Core install stays lightweight. Provider SDKs remain opt-in, and the workflow is the same whether you use Anthropic, OpenAI-compatible endpoints, or local Ollama.</p>
+      <p>Core install stays lightweight. Provider SDKs remain opt-in, and the CLI and API plane share the same project state under <code style="font-family:var(--mono);font-size:11px;">.forge/</code>.</p>
     </div>
     <div class="cta-actions">
       <a class="btn btn-primary" href="https://github.com/nebullii/forge" target="_blank">View on GitHub</a>
@@ -680,7 +803,9 @@ No notifications.
 <span class="ps">$</span> forge new my-app -t web-app
 <span class="ps">$</span> cd my-app
 <span class="ps">$</span> $EDITOR .forge/spec.md
+<span class="ps">$</span> forge spec validate
 <span class="ps">$</span> forge build
+<span class="ps">$</span> forge serve --port 4123              <span class="cm"># optional local API plane</span>
 <span class="ps">$</span> forge dev
     </div>
   </div>
