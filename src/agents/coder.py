@@ -13,11 +13,11 @@ class CoderAgent(BaseAgent):
         "- Every file must be fully functional.\n"
         "- Include proper imports, error handling, and comments where logic is non-obvious.\n"
         "- Follow the project's build rules exactly.\n"
-        "- Use the file output format specified in the prompt.\n\n"
-        "When writing files, use this exact format for EACH file:\n\n"
-        "```file:path/to/file.ext\n"
-        "<complete file contents here>\n"
-        "```\n\n"
+        "- Use the structured JSON output format specified in the prompt.\n\n"
+        "When writing files, return a single JSON object:\n\n"
+        "{\n"
+        '  "files": [{"path": "path/to/file.ext", "content": "<complete file contents here>"}]\n'
+        "}\n\n"
         "Write every file in full. Do not skip any file."
     )
 
@@ -44,11 +44,12 @@ class CoderAgent(BaseAgent):
 {project_context}
 
 Write the COMPLETE contents of each file for this task.
-Use this format for each file:
-
-```file:path/to/filename.ext
-<complete file contents>
-```
+Return ONLY this JSON object:
+{{
+  "files": [
+    {{"path": "path/to/filename.ext", "content": "<complete file contents>"}}
+  ]
+}}
 
 Important:
 - Write COMPLETE files, not snippets
@@ -57,7 +58,7 @@ Important:
 - Follow the build rules exactly
 - If modifying an existing file, output the ENTIRE updated file"""
 
-        return self.invoke(prompt)
+        return self.invoke_json(prompt)
 
     def fix_file(self, filepath: str, current_content: str, issue: str,
                  spec: str, rules: str) -> str:
@@ -77,10 +78,11 @@ Current content:
 ## Issue to Fix
 {issue}
 
-Output the COMPLETE corrected file using this format:
+Output ONLY this JSON object:
+{{
+  "files": [
+    {{"path": "{filepath}", "content": "<complete corrected file contents>"}}
+  ]
+}}"""
 
-```file:{filepath}
-<complete corrected file contents>
-```"""
-
-        return self.invoke(prompt)
+        return self.invoke_json(prompt)

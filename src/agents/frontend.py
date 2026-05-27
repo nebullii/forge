@@ -48,14 +48,17 @@ UNIVERSAL RULES:
 - Match API contracts from the backend exactly (same endpoints, same field names).
 - Handle loading states, errors, and empty states in every UI component.
 - Keep components small and focused (under 100 lines each).
+- Never write `.env.local`, `.env`, `.env.development`, or `.env.production`.
+- If environment variables are needed, document them in `.env.example` only.
 
-Output every file using this exact format:
+Output ONLY a single JSON object with this exact shape:
+{
+  "files": [
+    {"path": "path/to/file.ext", "content": "<complete file contents>"}
+  ]
+}
 
-```file:path/to/filename.ext
-<complete file contents>
-```
-
-Write COMPLETE files. Match backend API contracts exactly.
+Do not use markdown fences. Write COMPLETE files. Match backend API contracts exactly.
 """
 class FrontendAgent(BaseAgent):
     name = "frontend"
@@ -103,12 +106,17 @@ Generate the COMPLETE frontend implementation:
 5. Reusable UI components
 6. API client for backend integration (src/api/*.js)
 
-Use this format for each file:
+Environment variable rule:
+- Never generate `.env.local`, `.env`, `.env.development`, or `.env.production`
+- If config variables are needed, write `.env.example` only
 
-```file:path/to/filename.ext
-<complete file contents>
-```
+Return ONLY this JSON object:
+{{
+  "files": [
+    {{"path": "path/to/file.ext", "content": "<complete file contents>"}}
+  ]
+}}
 
 Write COMPLETE files. Match the backend API contracts exactly."""
 
-        return self.invoke(prompt)
+        return self.invoke_json(prompt)

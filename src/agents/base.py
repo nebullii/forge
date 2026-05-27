@@ -48,16 +48,73 @@ class BaseAgent:
         )
         return f"{self.role}\n\n{skills_block}{safety}"
 
-    def invoke(self, prompt: str) -> str:
+    def _local_generation_options(self) -> dict:
+        """Role-aware defaults for local-model inference.
+
+        Local models are more sensitive to sampler drift and formatting
+        looseness than hosted frontier models, so keep these settings
+        conservative and deterministic by default.
+        """
+        provider_name = getattr(getattr(self.provider, "config", None), "name", "")
+        if str(provider_name).strip().lower() != "ollama":
+            return {}
+
+        role = (self.name or "").strip().lower()
+        runtime: dict = {"num_predict": 4096}
+
+        if role in {"planner", "reviewer", "security"}:
+            runtime.update({
+                "temperature": 0.1,
+                "top_p": 0.9,
+                "repeat_penalty": 1.05,
+            })
+        elif role in {"backend", "frontend", "builder", "coder", "ci", "deploy"}:
+            runtime.update({
+                "temperature": 0.15,
+                "top_p": 0.85,
+                "repeat_penalty": 1.05,
+            })
+        else:
+            runtime.update({
+                "temperature": 0.2,
+                "top_p": 0.9,
+            })
+
+        return {"ollama_options": runtime}
+
+    def invoke(self, prompt: str, **options) -> str:
         """Send a prompt to the LLM with this agent's system role."""
         messages = [{"role": "user", "content": prompt}]
-        return self.provider.chat_with_retry(messages, system=self._system_prompt())
+        merged = self._local_generation_options()
+        merged.update(options)
+        try:
+            return self.provider.chat_with_retry(messages, system=self._system_prompt(), **merged)
+        except TypeError as exc:
+            # Test doubles and custom providers may not accept provider-specific
+            # kwargs like json_mode or ollama_options. Fall back to the plain
+            # interface so agent logic remains provider-agnostic.
+            if "unexpected keyword argument" not in str(exc):
+                raise
+            return self.provider.chat_with_retry(messages, system=self._system_prompt())
 
-    def invoke_with_history(self, messages: list[dict]) -> str:
+    def invoke_json(self, prompt: str, **options) -> str:
+        """Send a prompt that must return a JSON object."""
+        merged = {"json_mode": True}
+        merged.update(options)
+        return self.invoke(prompt, **merged)
+
+    def invoke_with_history(self, messages: list[dict], **options) -> str:
         """Send a multi-turn conversation."""
-        return self.provider.chat_with_retry(messages, system=self._system_prompt())
+        merged = self._local_generation_options()
+        merged.update(options)
+        try:
+            return self.provider.chat_with_retry(messages, system=self._system_prompt(), **merged)
+        except TypeError as exc:
+            if "unexpected keyword argument" not in str(exc):
+                raise
+            return self.provider.chat_with_retry(messages, system=self._system_prompt())
 
-    def invoke_streaming(self, prompt: str, on_chunk=None) -> str:
+    def invoke_streaming(self, prompt: str, on_chunk=None, **options) -> str:
         """Like invoke() but yields each chunk to *on_chunk* as it arrives.
 
         Returns the complete accumulated response. If the provider's stream
@@ -66,8 +123,10 @@ class BaseAgent:
         """
         messages = [{"role": "user", "content": prompt}]
         parts: list[str] = []
+        merged = self._local_generation_options()
+        merged.update(options)
         try:
-            for chunk in self.provider.stream_with_retry(messages, system=self._system_prompt()):
+            for chunk in self.provider.stream_with_retry(messages, system=self._system_prompt(), **merged):
                 if not chunk:
                     continue
                 parts.append(chunk)
@@ -77,6 +136,12 @@ class BaseAgent:
                     except Exception:
                         # Callback errors must not break the stream
                         pass
+        except TypeError as exc:
+            if "unexpected keyword argument" not in str(exc):
+                raise
+            if parts:
+                raise
+            return self.invoke(prompt)
         except Exception:
             # If streaming setup fails, fall back to the blocking path so the
             # caller still gets a usable response.

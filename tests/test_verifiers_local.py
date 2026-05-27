@@ -87,6 +87,15 @@ def test_js_verifier_handles_pomodoro_exact_pattern():
     assert any("resetTimer" in log for log in result.logs)
 
 
+def test_js_verifier_skips_jsx_and_vite_config_files():
+    files = {
+        "frontend/src/App.jsx": "export default function App() { return <main>Hello</main> }",
+        "frontend/vite.config.js": "import { defineConfig } from 'vite'\nexport default defineConfig({})\n",
+    }
+    result = JavaScriptVerifier().run(_js_context(files))
+    assert result.passed
+
+
 # ---------- HTML behaviour verifier --------------------------------------
 
 def _html_context(files, *, framework="static-html"):

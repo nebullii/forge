@@ -22,7 +22,9 @@ TASK_LANE_ORDER = {
     "frontend": 4,
     "integration": 5,
     "security": 6,
-    "coder": 7,
+    "test": 7,
+    "tester": 7,
+    "coder": 8,
 }
 
 
@@ -87,6 +89,8 @@ from .verification.html_behavior import HTMLBehaviorVerifier
 from .verification.javascript import JavaScriptVerifier
 from .support import is_supported_provider
 from .ui import format_usage_summary
+from .quality import QualityTracker
+from .evals import run_eval
 
 if TYPE_CHECKING:
     from .ui import BuildUI
@@ -141,7 +145,13 @@ class BuildOrchestrator:
                 "max_tokens": provider_config.max_tokens,
             }]
         }
-        self.model_router = ModelRouter(self.config, provider_config, provider_scope=provider_scope)
+        self.quality = QualityTracker(forge_path)
+        self.model_router = ModelRouter(
+            self.config,
+            provider_config,
+            provider_scope=provider_scope,
+            quality_snapshot=self.quality.snapshot(),
+        )
         self.provider = create_provider(provider_config)
 
         # Load skills for this project
@@ -293,7 +303,15 @@ class BuildOrchestrator:
 
         existing_context = build_context_string(self.project_root, max_tokens=2000)
 
-        plan, planner_usage = self._run_planner_with_routing(spec, rules, feature, existing_context)
+        plan, planner_usage = self._compile_spec_api_plan(spec, feature)
+        if plan is None:
+            plan, planner_usage = self._run_planner_with_routing(spec, rules, feature, existing_context)
+        else:
+            self.audit.log(
+                "spec_api_plan_created",
+                build_id=self.state.build_id,
+                task_count=len(plan.get("tasks", [])),
+            )
 
         if self.ui:
             self.ui.stream_stop()
@@ -327,7 +345,10 @@ class BuildOrchestrator:
                 agent="builder",
                 specialization=task_data.get("specialization") or task_data.get("agent", "coder"),
                 planned_files=planned_files,
+                prompt=task_data.get("prompt", ""),
             )
+            if task_data.get("spec_api") and task.prompt:
+                task.contracts = "__spec_api_task__"
             self.state.tasks.append(task)
             self._publish_artifact(TaskPlanArtifact(
                 task_id=task.id,
@@ -379,6 +400,88 @@ class BuildOrchestrator:
             for t in self.state.tasks:
                 print(f"     - {t.name}")
             print("")
+
+    def _compile_spec_api_plan(self, spec: str, feature: Optional[str]) -> tuple[Optional[dict], Optional[dict]]:
+        """Create a deterministic plan from Forge Spec API primitives when present."""
+        if feature:
+            return None, None
+        from .specapi import compile_task_graph, parse_spec_text
+
+        doc = parse_spec_text(spec)
+        if not doc.primitives:
+            return None, None
+        if not doc.valid:
+            messages = "; ".join(
+                f"line {item.line}: {item.message}"
+                for item in doc.diagnostics
+                if item.severity == "error"
+            )
+            raise RuntimeError(f"Spec API validation failed: {messages}")
+
+        graph = compile_task_graph(doc)
+        payload = {"spec": doc.to_dict(), "task_graph": graph.to_dict()}
+        (self.forge_path / "task-graph.json").write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n"
+        )
+
+        primitive_map = {item.ref: item.to_dict() for item in doc.primitives}
+        tasks = []
+        for task in graph.tasks:
+            task_data = task.to_dict()
+            primitives = [primitive_map[ref] for ref in task.inputs if ref in primitive_map]
+            prompt = (
+                "Implement this Forge Spec API task exactly.\n"
+                "Return ONLY a JSON object with this shape:\n"
+                "{\n"
+                '  "status": "success",\n'
+                '  "files": [{"path": "relative/path", "content": "complete file contents"}],\n'
+                '  "contracts": {"api": [], "models": [], "events": []},\n'
+                '  "uses_contracts": [],\n'
+                '  "notes": [],\n'
+                '  "requires": []\n'
+                "}\n"
+                "Do not use markdown fences. Backend tasks must include api/model/event contracts.\n\n"
+                f"Task:\n{json.dumps(task_data, indent=2, sort_keys=True)}\n\n"
+                f"Input primitives:\n{json.dumps(primitives, indent=2, sort_keys=True)}"
+            )
+            tasks.append({
+                "id": task.id,
+                "name": task.name or task.id,
+                "description": task.description,
+                "agent": "builder",
+                "specialization": task.specialization,
+                "files": [],
+                "prompt": prompt,
+                "spec_api": True,
+            })
+
+        stack = {}
+        for primitive in doc.primitives:
+            if primitive.type == "project":
+                raw_stack = str(primitive.body.get("stack", "") or "")
+                stack = {
+                    "type": primitive.body.get("type", ""),
+                    "stack": raw_stack,
+                }
+                if raw_stack == "react_fastapi_sqlite":
+                    stack.update({
+                        "framework": "fastapi",
+                        "frontend": "react",
+                        "database": "sqlite",
+                    })
+                if primitive.body.get("type") == "web_app":
+                    stack.setdefault("template_family", "web-app")
+                break
+
+        return {
+            "decisions": {
+                "stack": stack,
+                "architecture": "Forge Spec API deterministic task graph",
+                "reasoning": "Compiled structured Spec API primitives locally before model execution.",
+                "directory_structure": "Generated by task-specific builder outputs.",
+            },
+            "tasks": tasks,
+        }, None
 
     def _get_classic_agent(self, agent_name: str, provider_config: Optional[ProviderConfig] = None):
         """Return (or lazily create) a classic-mode agent for the given role and provider."""
@@ -485,6 +588,15 @@ class BuildOrchestrator:
                         if self.ui:
                             self.ui.stream_stop()
                 if isinstance(plan, dict) and plan.get("tasks"):
+                    self.model_router.record_outcome("planner", decision.provider_config, True)
+                    self.quality.record_outcome("planner", decision.provider_config, True)
+                    eval_result = run_eval("planner", json.dumps(plan))
+                    self.quality.record_eval(
+                        "planner", decision.provider_config,
+                        passed=eval_result.passed,
+                        score=eval_result.score,
+                        summary=eval_result.summary,
+                    )
                     return plan, agent.provider.get_last_usage()
                 reason = "planner produced no tasks"
                 failure = RuntimeError(reason)
@@ -502,6 +614,8 @@ class BuildOrchestrator:
                 attempt=attempt,
                 error=reason,
             )
+            self.model_router.record_outcome("planner", decision.provider_config, False)
+            self.quality.record_outcome("planner", decision.provider_config, False)
             remaining = chain[idx + 1:]
             if not remaining:
                 break
@@ -527,6 +641,15 @@ class BuildOrchestrator:
             try:
                 review = agent.review_files(files_dict, spec, rules)
                 if isinstance(review, dict) and "passed" in review:
+                    self.model_router.record_outcome("reviewer", decision.provider_config, True)
+                    self.quality.record_outcome("reviewer", decision.provider_config, True)
+                    eval_result = run_eval("reviewer", json.dumps(review))
+                    self.quality.record_eval(
+                        "reviewer", decision.provider_config,
+                        passed=eval_result.passed,
+                        score=eval_result.score,
+                        summary=eval_result.summary,
+                    )
                     return review, agent.provider.get_last_usage()
                 reason = "reviewer produced invalid review"
                 failure = RuntimeError(reason)
@@ -544,6 +667,8 @@ class BuildOrchestrator:
                 attempt=attempt,
                 error=reason,
             )
+            self.model_router.record_outcome("reviewer", decision.provider_config, False)
+            self.quality.record_outcome("reviewer", decision.provider_config, False)
             remaining = chain[idx + 1:]
             if not remaining:
                 break
@@ -556,6 +681,8 @@ class BuildOrchestrator:
         self,
         agent_name: str,
         prompt_to_use: str,
+        route_role: Optional[str] = None,
+        strict_output: bool = False,
         fallback_task: Optional[dict] = None,
         spec: str = "",
         rules: str = "",
@@ -564,23 +691,29 @@ class BuildOrchestrator:
     ) -> tuple[str, list[tuple[str, str]], ProviderConfig, dict]:
         errors = []
         role = agent_name or "coder"
-        chain = self.model_router.route_chain(role)
+        routing_role = route_role or role
+        if routing_role == "test":
+            routing_role = "tester"
+        chain = self.model_router.route_chain(routing_role)
         for idx, decision in enumerate(chain):
             attempt = idx + 1
-            self._log_route_selection(role, decision, "build", attempt)
+            self._log_route_selection(routing_role, decision, "build", attempt)
             failure: Optional[Exception] = None
             try:
                 if role == "builder":
                     agent = self._get_classic_agent("builder", decision.provider_config)
-                    response = agent.build_task(
-                        fallback_task or {"name": "Task", "description": "", "files": []},
-                        spec,
-                        rules,
-                        decisions,
-                        project_context=project_context,
-                        backend_files=(fallback_task or {}).get("backend_files", []),
-                        deploy_template=(fallback_task or {}).get("deploy_template", ""),
-                    )
+                    if strict_output and prompt_to_use:
+                        response = agent.invoke_json(prompt_to_use)
+                    else:
+                        response = agent.build_task(
+                            fallback_task or {"name": "Task", "description": "", "files": []},
+                            spec,
+                            rules,
+                            decisions,
+                            project_context=project_context,
+                            backend_files=(fallback_task or {}).get("backend_files", []),
+                            deploy_template=(fallback_task or {}).get("deploy_template", ""),
+                        )
                 elif prompt_to_use:
                     agent = self._get_classic_agent(role, decision.provider_config)
                     response = agent.invoke(prompt_to_use)
@@ -594,9 +727,33 @@ class BuildOrchestrator:
                         project_context,
                     )
 
-                files = agent.extract_files(response)
-                validation = validate_agent_output(role, response, files)
+                if strict_output:
+                    from .agents.contracts import parse_agent_output_json, validate_agent_output as validate_structured_agent_output
+                    payload = parse_agent_output_json(response)
+                    structured = validate_structured_agent_output(payload, role=routing_role)
+                    files = [(item.path, item.content) for item in structured.files]
+                    validation = validate_agent_output(role, response, files)
+                else:
+                    files = agent.extract_files(response)
+                    validation = validate_agent_output(role, response, files)
                 if validation.valid:
+                    self.model_router.record_outcome(routing_role, decision.provider_config, True)
+                    self.quality.record_outcome(routing_role, decision.provider_config, True)
+                    eval_kind = None
+                    if role == "backend":
+                        eval_kind = "backend"
+                    elif role == "builder":
+                        specialization = str((fallback_task or {}).get("specialization", "")).strip().lower()
+                        if specialization == "backend":
+                            eval_kind = "backend"
+                    if eval_kind:
+                        eval_result = run_eval(eval_kind, response)
+                        self.quality.record_eval(
+                            routing_role, decision.provider_config,
+                            passed=eval_result.passed,
+                            score=eval_result.score,
+                            summary=eval_result.summary,
+                        )
                     return response, files, decision.provider_config, agent.provider.get_last_usage()
                 reason = validation.reason
                 failure = RuntimeError(reason)
@@ -608,20 +765,22 @@ class BuildOrchestrator:
             self.audit.log(
                 "model_route_failed",
                 build_id=self.state.build_id or "",
-                role=role,
+                role=routing_role,
                 provider=decision.provider_config.name,
                 profile=decision.provider_config.profile,
                 model=decision.provider_config.model,
                 attempt=attempt,
                 error=reason,
             )
+            self.model_router.record_outcome(routing_role, decision.provider_config, False)
+            self.quality.record_outcome(routing_role, decision.provider_config, False)
             remaining = chain[idx + 1:]
             if not remaining:
                 break
             if self._should_skip_remaining_chain(decision, failure, remaining):
                 break
-            self._notify_route_fallback(role, decision, reason, attempt + 1)
-        raise RuntimeError(f"{role} failed across all routed models: {'; '.join(errors)}")
+            self._notify_route_fallback(routing_role, decision, reason, attempt + 1)
+        raise RuntimeError(f"{routing_role} failed across all routed models: {'; '.join(errors)}")
 
     def _fix_with_routing(
         self,
@@ -741,8 +900,13 @@ class BuildOrchestrator:
             ],
             "deploy_template": self._read_forge_file("deploy.md"),
         }
+        route_role = specialization if specialization in {
+            "backend", "frontend", "ci", "deploy", "security", "test", "tester",
+        } else agent_name
         response, files, used_provider, usage = self._generate_with_routing(
             agent_name="builder",
+            route_role=route_role,
+            strict_output=task.contracts == "__spec_api_task__",
             prompt_to_use=prompt_to_use or "",
             fallback_task=task_dict,
             spec=spec,
@@ -798,6 +962,7 @@ class BuildOrchestrator:
             build_id=self.state.build_id,
             task_id=task.id,
             agent="builder",
+            routed_role=route_role,
             provider=used_provider.name,
             profile=used_provider.profile,
             model=used_provider.model,
@@ -1512,6 +1677,7 @@ class BuildOrchestrator:
                 if self._verification_report is not None
                 else None
             ),
+            "model_quality": self.quality.snapshot(),
         }
         self.audit.write_report(report)
 

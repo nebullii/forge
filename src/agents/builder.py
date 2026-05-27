@@ -8,6 +8,7 @@ from .frontend import FrontendAgent
 from .ci_cd import CIAgent
 from .deploy import DeployAgent
 from .coder import CoderAgent
+from ..scaffolds import scaffold_supported_task
 
 
 class BuilderAgent(BaseAgent):
@@ -50,6 +51,10 @@ class BuilderAgent(BaseAgent):
             or task.get("agent")
             or "coder"
         )
+
+        deterministic = scaffold_supported_task(task, spec, decisions if isinstance(decisions, dict) else {})
+        if deterministic is not None:
+            return deterministic
 
         if specialization == "backend":
             return self._backend.generate_backend(spec, rules, str(decisions), project_context)

@@ -32,15 +32,15 @@ class MockLLMProvider(BaseProvider):
         super().__init__(ProviderConfig(name="mock", model="mock-1"))
         self._responses = responses
 
-    def chat(self, messages, system=""):
+    def chat(self, messages, system="", **options):
         prompt = (messages[-1]["content"] if messages else "") + " " + system
         for key, response in self._responses.items():
             if key.lower() in prompt.lower():
                 return response
         return "No matching response"
 
-    def stream(self, messages, system=""):
-        yield self.chat(messages, system)
+    def stream(self, messages, system="", **options):
+        yield self.chat(messages, system, **options)
 
 
 # ---------------------------------------------------------------------------
@@ -80,63 +80,50 @@ tasks:
 """
 
 BACKEND_RESPONSE = """\
-```file:app/main.py
-from fastapi import FastAPI
-app = FastAPI()
-
-@app.get("/users")
-def list_users():
-    return [{"id": 1, "name": "Alice"}]
-
-@app.post("/users")
-def create_user(name: str):
-    return {"id": 2, "name": name}
-```
-
-```file:app/models.py
-import sqlite3
-
-def get_db():
-    return sqlite3.connect("app.db")
-```
-
-```contracts
 {
-  "api": [
-    {"method": "GET", "path": "/users", "response_schema": {"type": "array"}, "auth": "none"},
-    {"method": "POST", "path": "/users", "request_schema": {"name": "str"}, "auth": "none"}
+  "files": [
+    {
+      "path": "app/main.py",
+      "content": "from fastapi import FastAPI\\napp = FastAPI()\\n\\n@app.get(\\"/users\\")\\ndef list_users():\\n    return [{\\"id\\": 1, \\"name\\": \\"Alice\\"}]\\n\\n@app.post(\\"/users\\")\\ndef create_user(name: str):\\n    return {\\"id\\": 2, \\"name\\": name}\\n"
+    },
+    {
+      "path": "app/models.py",
+      "content": "import sqlite3\\n\\ndef get_db():\\n    return sqlite3.connect(\\"app.db\\")\\n"
+    }
   ],
-  "models": [
-    {"name": "User", "fields": {"id": "integer", "name": "text"}}
-  ]
+  "contracts": {
+    "api": [
+      {"method": "GET", "path": "/users", "response_schema": {"type": "array"}, "auth": "none"},
+      {"method": "POST", "path": "/users", "request_schema": {"name": "str"}, "auth": "none"}
+    ],
+    "models": [
+      {"name": "User", "fields": {"id": "integer", "name": "text"}}
+    ],
+    "events": []
+  }
 }
-```
 """
 
 FRONTEND_RESPONSE = """\
-```file:src/App.jsx
-import React from 'react';
-
-export default function App() {
-  const [users, setUsers] = React.useState([]);
-  React.useEffect(() => {
-    fetch('/users').then(r => r.json()).then(setUsers);
-  }, []);
-  return <ul>{users.map(u => <li key={u.id}>{u.name}</li>)}</ul>;
+{
+  "files": [
+    {
+      "path": "src/App.jsx",
+      "content": "import React from 'react';\\n\\nexport default function App() {\\n  const [users, setUsers] = React.useState([]);\\n  React.useEffect(() => {\\n    fetch('/users').then(r => r.json()).then(setUsers);\\n  }, []);\\n  return <ul>{users.map(u => <li key={u.id}>{u.name}</li>)}</ul>;\\n}\\n"
+    },
+    {
+      "path": "src/main.jsx",
+      "content": "import React from 'react';\\nimport ReactDOM from 'react-dom/client';\\nimport App from './App';\\nReactDOM.createRoot(document.getElementById('root')).render(<App />);\\n"
+    }
+  ]
 }
-```
-
-```file:src/main.jsx
-import React from 'react';
-import ReactDOM from 'react-dom/client';
-import App from './App';
-ReactDOM.createRoot(document.getElementById('root')).render(<App />);
-```
 """
 
 REVIEWER_RESPONSE = """\
-passed: true
-issues: []
+{
+  "passed": true,
+  "issues": []
+}
 """
 
 

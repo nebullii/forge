@@ -43,4 +43,14 @@ class TestBuildPolicy:
         write_default_policy(path)
         content = path.read_text()
         assert "approval_gates" in content
+        assert "support_tier" in content
+        assert "allowed_providers" in content
+        assert "fail_on_warning_categories" in content
         assert "auto_export_openapi: true" in content
+
+    def test_validate_provider(self):
+        policy = BuildPolicy(allowed_providers=["ollama", "openai"])
+        assert policy.validate_provider("ollama") == []
+        errors = policy.validate_provider("anthropic")
+        assert errors
+        assert "Allowed providers" in errors[0]

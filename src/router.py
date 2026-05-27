@@ -17,6 +17,8 @@ ROLE_CAPABILITIES = {
     "verifier": (),
     "backend": ("code", "reasoning"),
     "frontend": ("code", "reasoning"),
+    "tester": ("code", "review"),
+    "test": ("code", "review"),
     "coder": ("cheap", "code"),
     "ci": ("cheap", "code"),
     "deploy": ("cheap", "code"),
@@ -40,8 +42,11 @@ class ModelRouter:
 
     config: dict
     default_provider: ProviderConfig
+    provider_scope: Optional[str] = None
     route_overrides: dict[str, object] = field(default_factory=dict)
     _candidates: list[ProviderConfig] = field(default_factory=list)
+    _outcomes: dict[tuple[str, str, str, str], list[bool]] = field(default_factory=dict)
+    quality_snapshot: dict[str, dict] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.route_overrides:
@@ -61,6 +66,19 @@ class ModelRouter:
             seen.add((cfg.name, cfg.profile, cfg.model))
         for candidate in self._candidates:
             score = self._candidate_score(candidate, capabilities)
+            history = self._outcomes.get((role, candidate.name, candidate.profile, candidate.model), [])
+            if history:
+                failures = len([item for item in history if not item])
+                successes = len(history) - failures
+                score += successes * 2
+                score -= failures * 15
+            quality = self.quality_snapshot.get(self._quality_key(role, candidate))
+            if quality:
+                attempts = max(1, int(quality.get("attempts", 0)))
+                eval_count = max(1, int(quality.get("eval_count", 0)))
+                score += int((int(quality.get("successes", 0)) / attempts) * 35)
+                score += int((int(quality.get("eval_score_total", 0)) / eval_count) / 5)
+                score -= int((int(quality.get("failures", 0)) / attempts) * 10)
             reason = f"matched capabilities {', '.join(capabilities)}"
             key = (candidate.name, candidate.profile, candidate.model)
             if key in seen:
@@ -72,6 +90,18 @@ class ModelRouter:
         if not ranked:
             return [RouteDecision(self.default_provider, reason="default provider fallback", rank=0)]
         return ranked
+
+    def record_outcome(self, role: str, config: ProviderConfig, success: bool) -> None:
+        """Track recent routed outcomes so weak candidates get demoted."""
+        key = (role, config.name, config.profile, config.model)
+        history = self._outcomes.setdefault(key, [])
+        history.append(bool(success))
+        # Recent history matters most; keep the window small and cheap.
+        if len(history) > 20:
+            del history[:-20]
+
+    def _quality_key(self, role: str, config: ProviderConfig) -> str:
+        return "|".join([role, config.name, config.profile or "", config.model])
 
     def discover_ollama_models(self, provider_name: str = "ollama") -> list[ProviderConfig]:
         """Public helper for tests or diagnostics."""
@@ -87,23 +117,60 @@ class ModelRouter:
         for provider in providers:
             if not isinstance(provider, dict):
                 continue
+            provider_name = provider.get("name", "")
             profiles = provider.get("profiles")
             if profiles and isinstance(profiles, dict):
                 for profile_name, profile_data in profiles.items():
+                    if not self._scope_allows(provider_name, profile_name=profile_name):
+                        continue
                     merged = dict(provider)
                     merged.update(profile_data or {})
                     merged.pop("profiles", None)
                     merged["profile"] = profile_name
                     candidates.append(_provider_config_from_dict(merged))
             else:
-                candidates.append(_provider_config_from_dict(provider))
+                if self._scope_allows(provider_name, model_name=provider.get("model", "")):
+                    candidates.append(_provider_config_from_dict(provider))
 
             if provider.get("name", "").lower() == "ollama" and provider.get("discover", False):
-                candidates.extend(self._discover_ollama_models(provider))
+                discovered = [
+                    cfg for cfg in self._discover_ollama_models(provider)
+                    if self._scope_allows(cfg.name, profile_name=cfg.profile, model_name=cfg.model)
+                ]
+                candidates.extend(discovered)
 
         if not candidates:
             candidates.append(self.default_provider)
         return candidates
+
+    def _scope_allows(
+        self,
+        provider_name: str,
+        *,
+        profile_name: str = "",
+        model_name: str = "",
+    ) -> bool:
+        scope = (self.provider_scope or "").strip().lower()
+        if not scope:
+            return True
+
+        provider = (provider_name or "").strip().lower()
+        profile = (profile_name or "").strip().lower()
+        model = (model_name or "").strip().lower()
+
+        if scope == provider:
+            return True
+
+        refs = {provider}
+        if profile:
+            refs.add(profile)
+            if not profile.startswith(f"{provider}:") and not profile.startswith(f"{provider}/"):
+                refs.add(f"{provider}:{profile}")
+                refs.add(f"{provider}/{profile}")
+        if model:
+            refs.add(f"{provider}:{model}")
+
+        return scope in refs
 
     def _discover_ollama_models(self, provider: dict) -> list[ProviderConfig]:
         try:

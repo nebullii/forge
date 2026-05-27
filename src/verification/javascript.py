@@ -74,18 +74,39 @@ class JavaScriptVerifier(BaseVerifier):
 
     # ------------------------------------------------------------------
     def _is_js_carrier(self, path: str) -> bool:
-        return path.endswith((".js", ".jsx", ".mjs", ".cjs", ".html", ".htm"))
+        return path.endswith((".js", ".mjs", ".cjs", ".html", ".htm"))
 
     def _gather_sources(self, files: dict[str, str]) -> dict[str, str]:
         """Return {logical_path: source} pairs including inline HTML scripts."""
         out: dict[str, str] = {}
         for path, content in files.items():
-            if path.endswith((".js", ".jsx", ".mjs", ".cjs")):
+            if self._should_skip_file(path, content):
+                continue
+            if path.endswith((".js", ".mjs", ".cjs")):
                 out[path] = content
             elif path.endswith((".html", ".htm")):
                 for idx, body in enumerate(self._extract_inline_scripts(content)):
                     out[f"{path}#script-{idx}"] = body
         return out
+
+    def _should_skip_file(self, path: str, source: str) -> bool:
+        """Skip module/transpiled files the verifier is not equipped to parse.
+
+        This verifier targets plain browser JavaScript and inline scripts. It is
+        not a JSX/ESM parser, so Vite/React bootstrap files would otherwise
+        create false-positive syntax failures and trigger useless refeed loops.
+        """
+        lowered = path.lower()
+        if lowered.endswith(".jsx"):
+            return True
+        if lowered.endswith(("vite.config.js", "tailwind.config.js", "postcss.config.js")):
+            return True
+        # Skip obvious ESM modules; this verifier is aimed at direct browser JS.
+        if lowered.endswith((".js", ".mjs", ".cjs")) and re.search(
+            r"^\s*(import|export)\b", source, re.MULTILINE
+        ):
+            return True
+        return False
 
     def _extract_inline_scripts(self, html: str) -> list[str]:
         bodies: list[str] = []

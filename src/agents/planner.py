@@ -1,5 +1,6 @@
 """Planner agent -- analyzes spec and produces a structured build plan."""
 
+import json
 import re
 import yaml
 
@@ -212,7 +213,7 @@ class PlannerAgent(BaseAgent):
         "Your decisions are driven by: what the app does, how complex the UI is, "
         "whether real-time or high throughput is needed, and what minimizes total "
         "complexity for the given requirements.\n\n"
-        "You output ONLY the YAML format specified in the prompt. No markdown fences."
+        "You output ONLY the structured format specified in the prompt. No markdown fences."
     )
 
     def analyze_and_plan(self, spec: str, rules: str, existing_files: str = "",
@@ -228,9 +229,9 @@ class PlannerAgent(BaseAgent):
         prompt = self._build_plan_prompt(spec, rules, existing_files)
         prompt = self._fit_prompt_to_budget(prompt, spec, rules, existing_files)
         if on_chunk is not None:
-            response = self.invoke_streaming(prompt, on_chunk=on_chunk)
+            response = self.invoke_streaming(prompt, on_chunk=on_chunk, json_mode=True)
         else:
-            response = self.invoke(prompt)
+            response = self.invoke_json(prompt)
         return self._parse_plan(response)
 
     def _fit_prompt_to_budget(
@@ -276,35 +277,33 @@ class PlannerAgent(BaseAgent):
 
 Pick the simplest stack that ships this spec. Default to FastAPI + React + SQLite
 unless the spec clearly needs something else (CLI, static site, real-time).
-Output ONLY YAML — no fences, no prose:
+Output ONLY a single JSON object:
+{{
+  "decisions": {{
+    "stack": {{
+      "language": "...",
+      "framework": "...",
+      "database": "...",
+      "frontend": "...",
+      "styling": "..."
+    }},
+    "architecture": "One sentence.",
+    "reasoning": "1-2 sentences with complexity level (1-4).",
+    "directory_structure": "(full directory tree)"
+  }},
+  "tasks": [
+    {{
+      "id": "task_01",
+      "name": "Set up skeleton",
+      "description": "Project structure and manifests",
+      "agent": "builder",
+      "specialization": "setup",
+      "files": ["list"]
+    }}
+  ]
+}}
 
-decisions:
-  stack:
-    language: "..."
-    framework: "..."
-    database: "..."
-    frontend: "..."
-    styling: "..."
-  architecture: "One sentence."
-  reasoning: "1-2 sentences with complexity level (1-4)."
-  directory_structure: |
-    (full directory tree)
-
-tasks:
-  - id: task_01
-    name: "Set up skeleton"
-    description: "Project structure and manifests"
-    agent: builder
-    specialization: setup
-    files: [list]
-  - id: task_02
-    name: "..."
-    description: "..."
-    agent: builder
-    specialization: backend | frontend | ci | deploy | integration
-    files: [...]
-
-Aim for 3-6 tasks. Output ONLY the YAML."""
+Aim for 3-6 tasks. Output ONLY the JSON object."""
 
     def plan_incremental(self, spec: str, rules: str, feature_description: str,
                          existing_files: str) -> dict:
@@ -325,31 +324,29 @@ Aim for 3-6 tasks. Output ONLY the YAML."""
 Analyze the existing project and plan the tasks needed to add this feature.
 Consider what files need to be created vs modified.
 
-Output the plan as YAML with this exact structure:
+Output ONLY a single JSON object:
+{{
+  "decisions": {{
+    "changes_needed": "Brief summary of what needs to change",
+    "files_to_modify": ["existing/file.py"],
+    "files_to_create": ["new/file.py"],
+    "reasoning": "Why these changes"
+  }},
+  "tasks": [
+    {{
+      "id": "task_01",
+      "name": "Task name",
+      "description": "Detailed description of what to do",
+      "agent": "builder",
+      "specialization": "integration",
+      "files": ["files this task touches"]
+    }}
+  ]
+}}
 
-decisions:
-  changes_needed: "Brief summary of what needs to change"
-  files_to_modify: [list of existing files to change]
-  files_to_create: [list of new files]
-  reasoning: "Why these changes"
+Output ONLY the JSON object, nothing else."""
 
-tasks:
-  - id: task_01
-    name: "Task name"
-    description: "Detailed description of what to do"
-    agent: builder
-    specialization: integration
-    files: [files this task touches]
-  - id: task_02
-    name: "..."
-    description: "..."
-    agent: builder
-    specialization: integration
-    files: [...]
-
-Output ONLY the YAML, nothing else."""
-
-        response = self.invoke(prompt)
+        response = self.invoke_json(prompt)
         return self._parse_plan(response)
 
     def _should_use_local_planner(self, existing_files: str) -> bool:
@@ -729,37 +726,34 @@ PLAN STRUCTURE:
 - Use `agent: builder` for implementation work and `specialization` to label
   the slice: setup, backend, frontend, ci, deploy, or integration.
 
-Output the plan as YAML — no markdown fences:
-
-decisions:
-  stack:
-    language: "..."
-    framework: "..."
-    database: "..."
-    frontend: "..."        # "none" for API-only or CLI
-    styling: "..."         # "none" for API-only or CLI
-  architecture: "One sentence: how do the components connect?"
-  reasoning: "2-3 sentences. Include complexity level (1-4) and why this stack fits."
-  directory_structure: |
-    (write the FULL directory tree adapted to your chosen stack — see examples above)
+Output ONLY a single JSON object:
+{{
+  "decisions": {{
+    "stack": {{
+      "language": "...",
+      "framework": "...",
+      "database": "...",
+      "frontend": "...",
+      "styling": "..."
+    }},
+    "architecture": "One sentence: how do the components connect?",
+    "reasoning": "2-3 sentences. Include complexity level (1-4) and why this stack fits.",
+    "directory_structure": "(write the FULL directory tree adapted to your chosen stack)"
+  }},
+  "tasks": [
+    {{
+      "id": "task_01",
+      "name": "Set up project structure and dependencies",
+      "description": "Create the project skeleton",
+      "agent": "builder",
+      "specialization": "setup",
+      "files": ["paths matching your directory_structure"]
+    }}
+  ]
+}}
 
 DIRECTORY STRUCTURE IS MANDATORY. All tasks MUST use paths consistent with it.
-
-tasks:
-  - id: task_01
-    name: "Set up project structure and dependencies"
-    description: "Create the project skeleton"
-    agent: builder
-    specialization: setup
-    files: [paths matching your directory_structure]
-  - id: task_02
-    name: "..."
-    description: "..."
-    agent: builder
-    specialization: backend | frontend | ci | deploy | integration
-    files: [...]
-
-Output ONLY the YAML, nothing else."""
+Output ONLY the JSON object, nothing else."""
 
     _TOP_LEVEL_AGENT = "builder"
     _LEGACY_SPECIALIZATIONS = {"backend", "frontend", "coder", "ci", "deploy"}
@@ -768,22 +762,38 @@ Output ONLY the YAML, nothing else."""
         """Parse and validate the YAML plan from the LLM response."""
         text = response.strip()
 
-        # Strip markdown code fences if present
-        if text.startswith("```"):
-            lines = text.split("\n")
-            if lines[-1].strip() == "```":
-                text = "\n".join(lines[1:-1])
-            else:
-                text = "\n".join(lines[1:])
+        plan = None
+        if text.startswith("{"):
+            try:
+                plan = json.loads(text)
+            except (json.JSONDecodeError, ValueError):
+                plan = None
+        if plan is None and response.lstrip().startswith("{"):
+            start = response.find("{")
+            end = response.rfind("}")
+            if 0 <= start < end:
+                try:
+                    plan = json.loads(response[start : end + 1])
+                except (json.JSONDecodeError, ValueError):
+                    plan = None
 
-        try:
-            plan = yaml.safe_load(text)
-        except yaml.YAMLError:
-            yaml_match = re.search(r'```(?:yaml)?\n(.*?)```', response, re.DOTALL)
-            if yaml_match:
-                plan = yaml.safe_load(yaml_match.group(1))
-            else:
-                plan = yaml.safe_load(response)
+        if plan is None:
+            # Strip markdown code fences if present
+            if text.startswith("```"):
+                lines = text.split("\n")
+                if lines[-1].strip() == "```":
+                    text = "\n".join(lines[1:-1])
+                else:
+                    text = "\n".join(lines[1:])
+
+            try:
+                plan = yaml.safe_load(text)
+            except yaml.YAMLError:
+                yaml_match = re.search(r'```(?:yaml)?\n(.*?)```', response, re.DOTALL)
+                if yaml_match:
+                    plan = yaml.safe_load(yaml_match.group(1))
+                else:
+                    plan = yaml.safe_load(response)
 
         if not isinstance(plan, dict):
             raise ValueError("Planner returned non-dict YAML.")

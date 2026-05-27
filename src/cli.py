@@ -5,12 +5,15 @@ import sys
 import shutil
 import argparse
 import subprocess
+import json
 from pathlib import Path
 
 import yaml
 
 from .policy import write_default_policy
 from .support import is_recommended_ollama_model, is_supported_provider
+from .evals import run_eval
+from .quality import QualityTracker
 
 
 FORGE_DIR = ".forge"
@@ -865,6 +868,55 @@ def cmd_build(args):
         sys.exit(1)
 
 
+def cmd_spec(args):
+    """Validate or compile Forge Spec API directives."""
+    from .specapi import compile_task_graph, parse_spec_file
+
+    forge_path = Path(FORGE_DIR)
+    spec_path = Path(getattr(args, "path", "") or forge_path / "spec.md")
+    if not spec_path.exists():
+        print(f"Spec file not found: {spec_path}")
+        sys.exit(1)
+
+    doc = parse_spec_file(spec_path)
+    spec_cmd = getattr(args, "spec_cmd", "validate")
+
+    if spec_cmd == "validate":
+        for diagnostic in doc.diagnostics:
+            print(f"{diagnostic.severity.upper()} line {diagnostic.line}: {diagnostic.message}")
+        if doc.valid:
+            print(f"Spec API valid: {len(doc.primitives)} primitive(s)")
+            return
+        sys.exit(1)
+
+    if spec_cmd == "compile":
+        graph = compile_task_graph(doc)
+        output = {
+            "spec": doc.to_dict(),
+            "task_graph": graph.to_dict(),
+        }
+        rendered = json.dumps(output, indent=2, sort_keys=True)
+        output_path = getattr(args, "output", None)
+        if output_path:
+            Path(output_path).write_text(rendered + "\n")
+            print(f"Wrote compiled spec to {output_path}")
+        else:
+            print(rendered)
+        if not doc.valid:
+            sys.exit(1)
+
+
+def cmd_serve(args):
+    """Run the local Forge REST control plane."""
+    from .control_plane import run_control_plane
+
+    run_control_plane(
+        host=getattr(args, "host", "127.0.0.1"),
+        port=getattr(args, "port", 4123),
+        project_root=Path.cwd(),
+    )
+
+
 def cmd_doctor(args):
     """Check project and provider readiness before running a build."""
     from .config import CONFIG_FILE, load_config, get_provider_config
@@ -931,6 +983,23 @@ def cmd_doctor(args):
     else:
         print(f"[fail] provider preflight: {err}")
 
+    if forge_path.exists():
+        tracker = QualityTracker(forge_path)
+        summaries = tracker.model_summary(provider_config.name, provider_config.model)
+        if summaries:
+            print("[ok] model quality: historical build data found")
+            for item in summaries[:3]:
+                attempts = item.get("attempts", 0)
+                successes = item.get("successes", 0)
+                eval_count = max(1, item.get("eval_count", 0))
+                eval_avg = int(item.get("eval_score_total", 0)) / eval_count
+                print(
+                    f"      {item.get('role')}: {successes}/{attempts} success, "
+                    f"avg eval {eval_avg:.1f}"
+                )
+        else:
+            print("[warn] model quality: no historical data yet for selected model")
+
 
 def cmd_contracts(args):
     """Export persisted contracts in various formats."""
@@ -965,6 +1034,49 @@ def cmd_contracts(args):
 
     print(f"Unsupported format: {output_format}")
     sys.exit(1)
+
+
+def cmd_eval(args):
+    """Evaluate a captured agent response."""
+    if getattr(args, "kind", "") == "smoke":
+        from .evals import run_smoke_eval
+
+        name = getattr(args, "scenario", "")
+        if not name:
+            print("Error: forge eval smoke requires --scenario")
+            sys.exit(1)
+        result = run_smoke_eval(name, output_dir=Path(getattr(args, "output_dir", "") or ".forge/evals"))
+        status = "PASS" if result.passed else "FAIL"
+        print(f"{status} {result.kind} score={result.score} {result.summary}")
+        if not result.passed:
+            sys.exit(1)
+        return
+
+    input_path = Path(getattr(args, "input", ""))
+    if not str(input_path):
+        print("Error: --input is required for planner, reviewer, and backend evals")
+        sys.exit(1)
+    if not input_path.exists():
+        print(f"Input file not found: {input_path}")
+        sys.exit(1)
+    if input_path.is_dir():
+        failures = 0
+        for file_path in sorted(p for p in input_path.iterdir() if p.is_file()):
+            stem = file_path.stem.split("-", 1)[0].lower()
+            result = run_eval(stem, file_path.read_text())
+            status = "PASS" if result.passed else "FAIL"
+            print(f"{status} {file_path.name} score={result.score} {result.summary}")
+            if not result.passed:
+                failures += 1
+        if failures:
+            sys.exit(1)
+        return
+
+    result = run_eval(getattr(args, "kind"), input_path.read_text())
+    status = "PASS" if result.passed else "FAIL"
+    print(f"{status} {result.kind} score={result.score} {result.summary}")
+    if not result.passed:
+        sys.exit(1)
 
 
 
@@ -1127,6 +1239,23 @@ def main():
                               help="Override .forge/policy.yaml approval mode for this build")
     build_parser.set_defaults(func=cmd_build)
 
+    # forge spec
+    spec_parser = subparsers.add_parser("spec", help="Validate or compile Forge Spec API directives")
+    spec_subparsers = spec_parser.add_subparsers(dest="spec_cmd", required=True)
+    spec_validate_parser = spec_subparsers.add_parser("validate", help="Validate .forge/spec.md")
+    spec_validate_parser.add_argument("--path", default=str(Path(FORGE_DIR) / "spec.md"), help="Spec file path")
+    spec_validate_parser.set_defaults(func=cmd_spec)
+    spec_compile_parser = spec_subparsers.add_parser("compile", help="Compile .forge/spec.md to a task graph")
+    spec_compile_parser.add_argument("--path", default=str(Path(FORGE_DIR) / "spec.md"), help="Spec file path")
+    spec_compile_parser.add_argument("--output", "-o", help="Write compiled JSON to a file")
+    spec_compile_parser.set_defaults(func=cmd_spec)
+
+    # forge serve
+    serve_parser = subparsers.add_parser("serve", help="Run local Forge REST control plane")
+    serve_parser.add_argument("--host", default="127.0.0.1", help="Bind host")
+    serve_parser.add_argument("--port", type=int, default=4123, help="Bind port")
+    serve_parser.set_defaults(func=cmd_serve)
+
     # forge doctor
     doctor_parser = subparsers.add_parser("doctor", help="Check project and provider readiness")
     doctor_parser.add_argument("--provider", "-p", help="Provider to check (anthropic, openai, together, ollama)")
@@ -1156,6 +1285,15 @@ def main():
                                          help="Export format")
     contracts_export_parser.add_argument("--output", "-o", help="Output path")
     contracts_export_parser.set_defaults(func=cmd_contracts)
+
+    # forge eval
+    eval_parser = subparsers.add_parser("eval", help="Evaluate a captured planner/reviewer/backend response")
+    eval_parser.add_argument("kind", choices=["planner", "reviewer", "backend", "smoke"], help="Response kind to evaluate")
+    eval_parser.add_argument("--input", "-i", help="Path to the response text file")
+    eval_parser.add_argument("--scenario", choices=["crm-basic", "api-only-crud", "frontend-contracts"],
+                             help="Smoke scenario for `forge eval smoke`")
+    eval_parser.add_argument("--output-dir", default=".forge/evals", help="Directory for smoke eval artifacts")
+    eval_parser.set_defaults(func=cmd_eval)
 
     args = parser.parse_args()
     args.func(args)

@@ -30,6 +30,8 @@ TASK_DEPENDENCIES: Dict[str, Set[str]] = {
     "frontend":    {"backend"},
     "integration": {"setup", "backend", "frontend", "ci", "deploy"},
     "security":    {"backend", "frontend"},
+    "test":        {"backend", "frontend"},
+    "tester":      {"backend", "frontend"},
     "coder":       {"setup"},
 }
 

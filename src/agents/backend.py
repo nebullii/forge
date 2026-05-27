@@ -43,32 +43,29 @@ UNIVERSAL RULES:
 - Keep business logic in service functions, not in route handlers.
 - Always include CORS middleware if there is a frontend.
 - Match the project structure conventions for the chosen framework.
+- If the spec includes user accounts, login, sessions, JWT, or authenticated user data,
+  protect mutating endpoints by default. Do NOT mark write endpoints as public unless the
+  spec clearly calls for anonymous writes.
 
-Output every file using this exact format:
-
-```file:path/to/filename.ext
-<complete file contents>
-```
-
-Write COMPLETE files. Include all imports and error handling.
-
-IMPORTANT — After all files, output a machine-readable contract block listing
-every API endpoint and data model you created. Use this EXACT format:
-
-```contracts
+Output ONLY a single JSON object with this exact shape:
 {
-  "api": [
-    {"method": "GET", "path": "/users", "response_schema": {"type": "array", "items": "User"}, "auth": "none"},
-    {"method": "POST", "path": "/users", "request_schema": {"email": "str", "name": "str"}, "response_schema": {"id": "int"}, "auth": "none"}
+  "files": [
+    {"path": "path/to/file.ext", "content": "<complete file contents>"}
   ],
-  "models": [
-    {"name": "User", "fields": {"id": "integer", "email": "text", "name": "text"}}
-  ]
+  "contracts": {
+    "api": [
+      {"method": "GET", "path": "/users", "response_schema": {"type": "array", "items": "User"}, "auth": "none"},
+      {"method": "POST", "path": "/users", "request_schema": {"email": "str", "name": "str"}, "response_schema": {"id": "int"}, "auth": "required"}
+    ],
+    "models": [
+      {"name": "User", "fields": {"id": "integer", "email": "text", "name": "text"}}
+    ],
+    "events": []
+  }
 }
-```
 
-This contract block is consumed by the frontend and security agents to ensure
-API compatibility. List EVERY endpoint and model — do not skip any.
+Do not use markdown fences. This contract object is consumed by the frontend and
+security agents to ensure API compatibility. List EVERY endpoint and model.
 """
 class BackendAgent(BaseAgent):
     name = "backend"
@@ -107,18 +104,16 @@ Generate the COMPLETE backend implementation:
 5. Service/business logic layer
 6. Configuration and environment handling
 
-Use this format for each file:
+Return ONLY this JSON object:
+{{
+  "files": [
+    {{"path": "path/to/file.ext", "content": "<complete file contents>"}}
+  ],
+  "contracts": {{
+    "api": [{{"method": "GET", "path": "/example", "response_schema": {{}}, "auth": "none"}}, {{"method": "POST", "path": "/example", "request_schema": {{}}, "response_schema": {{}}, "auth": "required"}}],
+    "models": [{{"name": "Example", "fields": {{"id": "integer"}}}}],
+    "events": []
+  }}
+}}"""
 
-```file:path/to/filename.ext
-<complete file contents>
-```
-
-Write COMPLETE files. Include all imports and error handling.
-
-After all files, output a contract block listing every endpoint and model:
-
-```contracts
-{{"api": [{{"method": "GET", "path": "/example", "response_schema": {{}}, "auth": "none"}}], "models": [{{"name": "Example", "fields": {{"id": "integer"}}}}]}}
-```"""
-
-        return self.invoke(prompt)
+        return self.invoke_json(prompt)

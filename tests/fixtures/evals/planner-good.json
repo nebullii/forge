@@ -1,0 +1,24 @@
+{
+  "decisions": {
+    "stack": {
+      "language": "Python",
+      "framework": "FastAPI",
+      "database": "sqlite3",
+      "frontend": "react",
+      "styling": "tailwind"
+    },
+    "architecture": "FastAPI serves a React frontend.",
+    "reasoning": "Complexity Level 2.",
+    "directory_structure": "/\n├── backend/\n└── frontend/"
+  },
+  "tasks": [
+    {
+      "id": "task_01",
+      "name": "Setup",
+      "description": "Create skeleton",
+      "agent": "builder",
+      "specialization": "setup",
+      "files": ["backend/main.py"]
+    }
+  ]
+}
