@@ -15,12 +15,15 @@ class BuildPolicy:
 
     schema_version: int = 1
     mode: str = "balanced"
+    support_tier: str = "supported"     # supported | experimental
     approval_mode: str = "off"           # off | interactive
     approval_gates: list[str] = field(default_factory=list)
     allowed_frameworks: list[str] = field(default_factory=list)
+    allowed_providers: list[str] = field(default_factory=list)
     allowed_agents: list[str] = field(default_factory=list)
     require_review: bool = False
     require_verification: bool = True
+    fail_on_warning_categories: list[str] = field(default_factory=list)
     auto_export_openapi: bool = True
     openapi_title: str = "Forge Generated API"
 
@@ -32,6 +35,12 @@ class BuildPolicy:
 
     def normalized_agents(self) -> set[str]:
         return {item.strip().lower() for item in self.allowed_agents if item.strip()}
+
+    def normalized_providers(self) -> set[str]:
+        return {item.strip().lower() for item in self.allowed_providers if item.strip()}
+
+    def normalized_warning_categories(self) -> set[str]:
+        return {item.strip().lower() for item in self.fail_on_warning_categories if item.strip()}
 
     def validate_stack(self, stack: dict) -> list[str]:
         if not self.allowed_frameworks:
@@ -68,10 +77,24 @@ class BuildPolicy:
                 )
         return errors
 
-    def validate_plan(self, stack: dict, agents: Iterable[str]) -> list[str]:
+    def validate_provider(self, provider: str) -> list[str]:
+        if not self.allowed_providers:
+            return []
+
+        allowed = self.normalized_providers()
+        name = (provider or "").strip().lower()
+        if name and name not in allowed:
+            return [
+                f"Policy blocked provider '{provider}'. Allowed providers: "
+                f"{', '.join(sorted(allowed))}."
+            ]
+        return []
+
+    def validate_plan(self, stack: dict, agents: Iterable[str], provider: str = "") -> list[str]:
         errors = []
         errors.extend(self.validate_stack(stack))
         errors.extend(self.validate_agents(agents))
+        errors.extend(self.validate_provider(provider))
         return errors
 
 
@@ -102,18 +125,22 @@ def write_default_policy(path: Path) -> None:
     data = {
         "schema_version": policy.schema_version,
         "mode": policy.mode,
+        "support_tier": policy.support_tier,
         "approval_mode": policy.approval_mode,
         "approval_gates": policy.approval_gates,
         "allowed_frameworks": policy.allowed_frameworks,
+        "allowed_providers": policy.allowed_providers,
         "allowed_agents": policy.allowed_agents,
         "require_review": policy.require_review,
         "require_verification": policy.require_verification,
+        "fail_on_warning_categories": policy.fail_on_warning_categories,
         "auto_export_openapi": policy.auto_export_openapi,
         "openapi_title": policy.openapi_title,
     }
     path.write_text(
         "# Forge build policy\n"
         "# approval_gates can include: plan, build, review, task_write\n"
+        "# support_tier can be: supported, experimental\n"
         "# allowed_frameworks and allowed_agents are optional allowlists\n"
         "# Top-level agents are planner, builder, reviewer, and optional security\n"
         + yaml.dump(data, default_flow_style=False, sort_keys=False)

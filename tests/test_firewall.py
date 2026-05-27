@@ -78,6 +78,22 @@ class TestPathValidation:
         ok, _ = firewall.validate_file_write("backend/.env", "SECRET=x")
         assert not ok
 
+    def test_controlled_env_materialization_allowed(self, firewall):
+        ok, _ = firewall.validate_materialized_env_write(
+            "backend/.env",
+            "backend/.env.example",
+            "DATABASE_PATH=backend/site.db\n",
+        )
+        assert ok
+
+    def test_controlled_env_materialization_requires_example_source(self, firewall):
+        ok, _ = firewall.validate_materialized_env_write(
+            "backend/.env",
+            "backend/config.txt",
+            "DATABASE_PATH=backend/site.db\n",
+        )
+        assert not ok
+
     def test_blocked_ssh(self, firewall):
         ok, _ = firewall.validate_file_write(".ssh/id_rsa", "private key")
         assert not ok

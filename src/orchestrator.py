@@ -14,6 +14,45 @@ from typing import Optional, TYPE_CHECKING
 
 logger = logging.getLogger(__name__)
 
+TASK_LANE_ORDER = {
+    "setup": 0,
+    "backend": 1,
+    "ci": 2,
+    "deploy": 3,
+    "frontend": 4,
+    "integration": 5,
+    "security": 6,
+    "test": 7,
+    "tester": 7,
+    "coder": 8,
+}
+
+
+HIGH_SIGNAL_SUSPICIOUS_PATTERNS = (
+    r"\bexfiltrat(e|ion|ing)\b",
+    r"\bleak\b",
+    r"\bupload\b",
+    r"\btransfer\b",
+    r"\bsend to\b",
+    r"\bhttp(s)?://\b",
+    r"\bcurl\b",
+    r"\bwget\b",
+    r"\bpastebin\b",
+    r"\bgist\b",
+    r"\bdrive\.google\b",
+    r"\bdropbox\b",
+)
+
+SENSITIVE_TERMS = (
+    r"\bsecret(s)?\b",
+    r"\btoken(s)?\b",
+    r"\bapi[- _]?key(s)?\b",
+    r"\bpassword(s)?\b",
+    r"\bprivate key\b",
+    r"\bssh\b",
+    r"\bcredential(s)?\b",
+)
+
 from .providers import create_provider
 from .providers.base import ProviderConfig
 from .agents import PlannerAgent, BuilderAgent, CoderAgent, ReviewerAgent
@@ -22,6 +61,7 @@ from .config import load_config
 from .audit import BuildAuditLogger
 from .policy import load_build_policy
 from .router import ModelRouter, RouteDecision
+from .envfiles import materialize_env_files
 from .security.firewall import AgenticFirewall
 from .state import (
     BuildState, TaskState, load_build_state, save_build_state, compute_spec_hash,
@@ -45,6 +85,12 @@ from .collaboration import (
     validate_agent_output,
 )
 from .verification import VerificationContext, VerificationRegistry
+from .verification.html_behavior import HTMLBehaviorVerifier
+from .verification.javascript import JavaScriptVerifier
+from .support import is_supported_provider
+from .ui import format_usage_summary
+from .quality import QualityTracker
+from .evals import run_eval
 
 if TYPE_CHECKING:
     from .ui import BuildUI
@@ -62,6 +108,14 @@ class BuildOrchestrator:
     State is persisted after each task, enabling resume on failure.
     """
 
+    # Max times the builder re-attempts a task after executable verifiers
+    # surface fixable errors. Counts attempts AFTER the initial generation.
+    MAX_REFEED_ATTEMPTS = 2
+
+    # Verifiers that run inline after each task, before disk write. Cheap +
+    # local (no LLM call), so we run them on every build regardless of phase.
+    _INLINE_VERIFIERS = (JavaScriptVerifier, HTMLBehaviorVerifier)
+
     def __init__(
         self,
         provider_config: ProviderConfig,
@@ -69,6 +123,7 @@ class BuildOrchestrator:
         review: bool = True,
         verbose: bool = False,
         approval_mode: Optional[str] = None,
+        provider_scope: Optional[str] = None,
         config_dict: Optional[dict] = None,
         ui: Optional["BuildUI"] = None,
     ):
@@ -90,7 +145,13 @@ class BuildOrchestrator:
                 "max_tokens": provider_config.max_tokens,
             }]
         }
-        self.model_router = ModelRouter(self.config, provider_config)
+        self.quality = QualityTracker(forge_path)
+        self.model_router = ModelRouter(
+            self.config,
+            provider_config,
+            provider_scope=provider_scope,
+            quality_snapshot=self.quality.snapshot(),
+        )
         self.provider = create_provider(provider_config)
 
         # Load skills for this project
@@ -236,16 +297,24 @@ class BuildOrchestrator:
     def _phase_plan(self, spec: str, rules: str, feature: Optional[str]):
         if self.ui:
             self.ui.phase_start("Phase 1: Planning")
-            self.ui.spinner_start("    Analyzing spec")
         else:
             print("Phase 1: Planning...")
             print("")
 
         existing_context = build_context_string(self.project_root, max_tokens=2000)
 
-        plan = self._run_planner_with_routing(spec, rules, feature, existing_context)
+        plan, planner_usage = self._compile_spec_api_plan(spec, feature)
+        if plan is None:
+            plan, planner_usage = self._run_planner_with_routing(spec, rules, feature, existing_context)
+        else:
+            self.audit.log(
+                "spec_api_plan_created",
+                build_id=self.state.build_id,
+                task_count=len(plan.get("tasks", [])),
+            )
 
         if self.ui:
+            self.ui.stream_stop()
             self.ui.spinner_stop()
 
         decisions = plan.get("decisions", {})
@@ -262,14 +331,24 @@ class BuildOrchestrator:
 
         self.state.tasks = []
         for i, task_data in enumerate(plan.get("tasks", [])):
+            planned_files = _normalize_planned_files(task_data.get("files", []))
+            description = task_data.get("description", "")
+            if planned_files != task_data.get("files", []):
+                description = (
+                    f"{description.rstrip()} "
+                    "Document required variables in `.env.example` files only; do not create real `.env` files."
+                ).strip()
             task = TaskState(
                 id=task_data.get("id", f"task_{i+1:02d}"),
                 name=task_data.get("name", "Unnamed task"),
-                description=task_data.get("description", ""),
+                description=description,
                 agent="builder",
                 specialization=task_data.get("specialization") or task_data.get("agent", "coder"),
-                planned_files=task_data.get("files", []),
+                planned_files=planned_files,
+                prompt=task_data.get("prompt", ""),
             )
+            if task_data.get("spec_api") and task.prompt:
+                task.contracts = "__spec_api_task__"
             self.state.tasks.append(task)
             self._publish_artifact(TaskPlanArtifact(
                 task_id=task.id,
@@ -278,6 +357,13 @@ class BuildOrchestrator:
                 specialization=task.specialization or "coder",
                 planned_files=tuple(task.planned_files),
             ))
+
+        self.state.tasks.sort(
+            key=lambda task: (
+                TASK_LANE_ORDER.get(self._task_lane(task), 99),
+                task.id,
+            )
+        )
 
         self.state.status = "building"
         self.state.current_task_index = 0
@@ -288,6 +374,14 @@ class BuildOrchestrator:
             task_count=len(self.state.tasks),
             stack=decisions.get("stack", {}),
         )
+        if planner_usage:
+            self.audit.log(
+                "model_usage",
+                build_id=self.state.build_id,
+                role="planner",
+                phase="planning",
+                usage=planner_usage,
+            )
         self._validate_policy(decisions.get("stack", {}), [t.agent for t in self.state.tasks])
         self._approval_gate(
             "plan",
@@ -295,13 +389,99 @@ class BuildOrchestrator:
         )
 
         if self.ui:
+            if planner_usage:
+                self.ui.note(f"planner usage: {_format_usage_for_output(planner_usage)}")
             self.ui.phase_end(f"  {len(self.state.tasks)} tasks planned")
             self.ui.set_tasks([t.name for t in self.state.tasks])
         else:
             print(f"   Plan: {len(self.state.tasks)} tasks")
+            if planner_usage:
+                print(f"     usage: {_format_usage_for_output(planner_usage)}")
             for t in self.state.tasks:
                 print(f"     - {t.name}")
             print("")
+
+    def _compile_spec_api_plan(self, spec: str, feature: Optional[str]) -> tuple[Optional[dict], Optional[dict]]:
+        """Create a deterministic plan from Forge Spec API primitives when present."""
+        if feature:
+            return None, None
+        from .specapi import compile_task_graph, parse_spec_text
+
+        doc = parse_spec_text(spec)
+        if not doc.primitives:
+            return None, None
+        if not doc.valid:
+            messages = "; ".join(
+                f"line {item.line}: {item.message}"
+                for item in doc.diagnostics
+                if item.severity == "error"
+            )
+            raise RuntimeError(f"Spec API validation failed: {messages}")
+
+        graph = compile_task_graph(doc)
+        payload = {"spec": doc.to_dict(), "task_graph": graph.to_dict()}
+        (self.forge_path / "task-graph.json").write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n"
+        )
+
+        primitive_map = {item.ref: item.to_dict() for item in doc.primitives}
+        tasks = []
+        for task in graph.tasks:
+            task_data = task.to_dict()
+            primitives = [primitive_map[ref] for ref in task.inputs if ref in primitive_map]
+            prompt = (
+                "Implement this Forge Spec API task exactly.\n"
+                "Return ONLY a JSON object with this shape:\n"
+                "{\n"
+                '  "status": "success",\n'
+                '  "files": [{"path": "relative/path", "content": "complete file contents"}],\n'
+                '  "contracts": {"api": [], "models": [], "events": []},\n'
+                '  "uses_contracts": [],\n'
+                '  "notes": [],\n'
+                '  "requires": []\n'
+                "}\n"
+                "Do not use markdown fences. Backend tasks must include api/model/event contracts.\n\n"
+                f"Task:\n{json.dumps(task_data, indent=2, sort_keys=True)}\n\n"
+                f"Input primitives:\n{json.dumps(primitives, indent=2, sort_keys=True)}"
+            )
+            tasks.append({
+                "id": task.id,
+                "name": task.name or task.id,
+                "description": task.description,
+                "agent": "builder",
+                "specialization": task.specialization,
+                "files": [],
+                "prompt": prompt,
+                "spec_api": True,
+            })
+
+        stack = {}
+        for primitive in doc.primitives:
+            if primitive.type == "project":
+                raw_stack = str(primitive.body.get("stack", "") or "")
+                stack = {
+                    "type": primitive.body.get("type", ""),
+                    "stack": raw_stack,
+                }
+                if raw_stack == "react_fastapi_sqlite":
+                    stack.update({
+                        "framework": "fastapi",
+                        "frontend": "react",
+                        "database": "sqlite",
+                    })
+                if primitive.body.get("type") == "web_app":
+                    stack.setdefault("template_family", "web-app")
+                break
+
+        return {
+            "decisions": {
+                "stack": stack,
+                "architecture": "Forge Spec API deterministic task graph",
+                "reasoning": "Compiled structured Spec API primitives locally before model execution.",
+                "directory_structure": "Generated by task-specific builder outputs.",
+            },
+            "tasks": tasks,
+        }, None
 
     def _get_classic_agent(self, agent_name: str, provider_config: Optional[ProviderConfig] = None):
         """Return (or lazily create) a classic-mode agent for the given role and provider."""
@@ -339,27 +519,90 @@ class BuildOrchestrator:
             attempt=attempt,
         )
 
+    def _notify_route_fallback(self, role: str, failed: RouteDecision, reason: str, next_attempt: int) -> None:
+        """Tell the user we're walking to the next model in the chain."""
+        short_reason = reason.splitlines()[0][:120] if reason else "unknown failure"
+        msg = (
+            f"{role} model {failed.provider_config} failed ({short_reason}); "
+            f"trying next candidate (#{next_attempt})..."
+        )
+        if self.ui:
+            self.ui.note(msg)
+        else:
+            print(f"   ! {msg}")
+
+    def _should_skip_remaining_chain(
+        self, decision: RouteDecision, exc: Exception, remaining: list[RouteDecision]
+    ) -> bool:
+        """Decide whether to abort the chain entirely after a failure.
+
+        Returns True only when the failure is an auth error and every remaining
+        candidate would hit the same auth context. OOM and context-overflow
+        failures continue the chain — a different model often succeeds.
+        """
+        err = str(exc).lower()
+        if not ("api key" in err or "unauthorized" in err or "authentication" in err):
+            return False
+        same_auth = all(
+            d.provider_config.name == decision.provider_config.name
+            and (d.provider_config.api_key or "") == (decision.provider_config.api_key or "")
+            for d in remaining
+        )
+        return same_auth
+
     def _run_planner_with_routing(
         self,
         spec: str,
         rules: str,
         feature: Optional[str],
         existing_context: str,
-    ) -> dict:
+    ) -> tuple[dict, dict]:
         errors = []
-        for attempt, decision in enumerate(self.model_router.route_chain("planner"), 1):
+        chain = self.model_router.route_chain("planner")
+        for idx, decision in enumerate(chain):
+            attempt = idx + 1
             self._log_route_selection("planner", decision, "plan", attempt)
             agent = self._get_classic_agent("planner", decision.provider_config)
+            failure: Optional[Exception] = None
             try:
                 if feature:
                     plan = agent.plan_incremental(spec, rules, feature, existing_context)
                 else:
-                    plan = agent.analyze_and_plan(spec, rules, existing_context)
+                    on_chunk = None
+                    if self.ui:
+                        # Show a live token counter while the planner streams.
+                        # New chain attempt → reset counter to start at 0.
+                        label = (
+                            "    Planning"
+                            if attempt == 1
+                            else f"    Planning (fallback #{attempt})"
+                        )
+                        self.ui.stream_stop()
+                        self.ui.stream_start(label)
+                        on_chunk = self.ui.stream_chunk
+                    try:
+                        plan = agent.analyze_and_plan(
+                            spec, rules, existing_context, on_chunk=on_chunk
+                        )
+                    finally:
+                        if self.ui:
+                            self.ui.stream_stop()
                 if isinstance(plan, dict) and plan.get("tasks"):
-                    return plan
+                    self.model_router.record_outcome("planner", decision.provider_config, True)
+                    self.quality.record_outcome("planner", decision.provider_config, True)
+                    eval_result = run_eval("planner", json.dumps(plan))
+                    self.quality.record_eval(
+                        "planner", decision.provider_config,
+                        passed=eval_result.passed,
+                        score=eval_result.score,
+                        summary=eval_result.summary,
+                    )
+                    return plan, agent.provider.get_last_usage()
                 reason = "planner produced no tasks"
+                failure = RuntimeError(reason)
             except Exception as exc:
                 reason = str(exc)
+                failure = exc
             errors.append(f"{decision.provider_config}: {reason}")
             self.audit.log(
                 "model_route_failed",
@@ -371,20 +614,48 @@ class BuildOrchestrator:
                 attempt=attempt,
                 error=reason,
             )
+            self.model_router.record_outcome("planner", decision.provider_config, False)
+            self.quality.record_outcome("planner", decision.provider_config, False)
+            remaining = chain[idx + 1:]
+            if not remaining:
+                break
+            if self._should_skip_remaining_chain(decision, failure, remaining):
+                self.audit.log(
+                    "model_route_aborted",
+                    build_id=self.state.build_id or "",
+                    role="planner",
+                    reason="auth failure on shared provider — skipping remaining chain",
+                )
+                break
+            self._notify_route_fallback("planner", decision, reason, attempt + 1)
         raise RuntimeError(f"Planner failed across all routed models: {'; '.join(errors)}")
 
-    def _run_reviewer_with_routing(self, files_dict: dict[str, str], spec: str, rules: str) -> dict:
+    def _run_reviewer_with_routing(self, files_dict: dict[str, str], spec: str, rules: str) -> tuple[dict, dict]:
         errors = []
-        for attempt, decision in enumerate(self.model_router.route_chain("reviewer"), 1):
+        chain = self.model_router.route_chain("reviewer")
+        for idx, decision in enumerate(chain):
+            attempt = idx + 1
             self._log_route_selection("reviewer", decision, "review", attempt)
             agent = self._get_classic_agent("reviewer", decision.provider_config)
+            failure: Optional[Exception] = None
             try:
                 review = agent.review_files(files_dict, spec, rules)
                 if isinstance(review, dict) and "passed" in review:
-                    return review
+                    self.model_router.record_outcome("reviewer", decision.provider_config, True)
+                    self.quality.record_outcome("reviewer", decision.provider_config, True)
+                    eval_result = run_eval("reviewer", json.dumps(review))
+                    self.quality.record_eval(
+                        "reviewer", decision.provider_config,
+                        passed=eval_result.passed,
+                        score=eval_result.score,
+                        summary=eval_result.summary,
+                    )
+                    return review, agent.provider.get_last_usage()
                 reason = "reviewer produced invalid review"
+                failure = RuntimeError(reason)
             except Exception as exc:
                 reason = str(exc)
+                failure = exc
             errors.append(f"{decision.provider_config}: {reason}")
             self.audit.log(
                 "model_route_failed",
@@ -396,34 +667,53 @@ class BuildOrchestrator:
                 attempt=attempt,
                 error=reason,
             )
+            self.model_router.record_outcome("reviewer", decision.provider_config, False)
+            self.quality.record_outcome("reviewer", decision.provider_config, False)
+            remaining = chain[idx + 1:]
+            if not remaining:
+                break
+            if self._should_skip_remaining_chain(decision, failure, remaining):
+                break
+            self._notify_route_fallback("reviewer", decision, reason, attempt + 1)
         raise RuntimeError(f"Reviewer failed across all routed models: {'; '.join(errors)}")
 
     def _generate_with_routing(
         self,
         agent_name: str,
         prompt_to_use: str,
+        route_role: Optional[str] = None,
+        strict_output: bool = False,
         fallback_task: Optional[dict] = None,
         spec: str = "",
         rules: str = "",
         decisions: str = "",
         project_context: str = "",
-    ) -> tuple[str, list[tuple[str, str]], ProviderConfig]:
+    ) -> tuple[str, list[tuple[str, str]], ProviderConfig, dict]:
         errors = []
         role = agent_name or "coder"
-        for attempt, decision in enumerate(self.model_router.route_chain(role), 1):
-            self._log_route_selection(role, decision, "build", attempt)
+        routing_role = route_role or role
+        if routing_role == "test":
+            routing_role = "tester"
+        chain = self.model_router.route_chain(routing_role)
+        for idx, decision in enumerate(chain):
+            attempt = idx + 1
+            self._log_route_selection(routing_role, decision, "build", attempt)
+            failure: Optional[Exception] = None
             try:
                 if role == "builder":
                     agent = self._get_classic_agent("builder", decision.provider_config)
-                    response = agent.build_task(
-                        fallback_task or {"name": "Task", "description": "", "files": []},
-                        spec,
-                        rules,
-                        decisions,
-                        project_context=project_context,
-                        backend_files=(fallback_task or {}).get("backend_files", []),
-                        deploy_template=(fallback_task or {}).get("deploy_template", ""),
-                    )
+                    if strict_output and prompt_to_use:
+                        response = agent.invoke_json(prompt_to_use)
+                    else:
+                        response = agent.build_task(
+                            fallback_task or {"name": "Task", "description": "", "files": []},
+                            spec,
+                            rules,
+                            decisions,
+                            project_context=project_context,
+                            backend_files=(fallback_task or {}).get("backend_files", []),
+                            deploy_template=(fallback_task or {}).get("deploy_template", ""),
+                        )
                 elif prompt_to_use:
                     agent = self._get_classic_agent(role, decision.provider_config)
                     response = agent.invoke(prompt_to_use)
@@ -437,26 +727,60 @@ class BuildOrchestrator:
                         project_context,
                     )
 
-                files = agent.extract_files(response)
-                validation = validate_agent_output(role, response, files)
+                if strict_output:
+                    from .agents.contracts import parse_agent_output_json, validate_agent_output as validate_structured_agent_output
+                    payload = parse_agent_output_json(response)
+                    structured = validate_structured_agent_output(payload, role=routing_role)
+                    files = [(item.path, item.content) for item in structured.files]
+                    validation = validate_agent_output(role, response, files)
+                else:
+                    files = agent.extract_files(response)
+                    validation = validate_agent_output(role, response, files)
                 if validation.valid:
-                    return response, files, decision.provider_config
+                    self.model_router.record_outcome(routing_role, decision.provider_config, True)
+                    self.quality.record_outcome(routing_role, decision.provider_config, True)
+                    eval_kind = None
+                    if role == "backend":
+                        eval_kind = "backend"
+                    elif role == "builder":
+                        specialization = str((fallback_task or {}).get("specialization", "")).strip().lower()
+                        if specialization == "backend":
+                            eval_kind = "backend"
+                    if eval_kind:
+                        eval_result = run_eval(eval_kind, response)
+                        self.quality.record_eval(
+                            routing_role, decision.provider_config,
+                            passed=eval_result.passed,
+                            score=eval_result.score,
+                            summary=eval_result.summary,
+                        )
+                    return response, files, decision.provider_config, agent.provider.get_last_usage()
                 reason = validation.reason
+                failure = RuntimeError(reason)
             except Exception as exc:
                 reason = str(exc)
+                failure = exc
 
             errors.append(f"{decision.provider_config}: {reason}")
             self.audit.log(
                 "model_route_failed",
                 build_id=self.state.build_id or "",
-                role=role,
+                role=routing_role,
                 provider=decision.provider_config.name,
                 profile=decision.provider_config.profile,
                 model=decision.provider_config.model,
                 attempt=attempt,
                 error=reason,
             )
-        raise RuntimeError(f"{role} failed across all routed models: {'; '.join(errors)}")
+            self.model_router.record_outcome(routing_role, decision.provider_config, False)
+            self.quality.record_outcome(routing_role, decision.provider_config, False)
+            remaining = chain[idx + 1:]
+            if not remaining:
+                break
+            if self._should_skip_remaining_chain(decision, failure, remaining):
+                break
+            self._notify_route_fallback(routing_role, decision, reason, attempt + 1)
+        raise RuntimeError(f"{routing_role} failed across all routed models: {'; '.join(errors)}")
 
     def _fix_with_routing(
         self,
@@ -466,7 +790,7 @@ class BuildOrchestrator:
         issue: str,
         spec: str,
         rules: str,
-    ) -> tuple[list[tuple[str, str]], ProviderConfig]:
+    ) -> tuple[list[tuple[str, str]], ProviderConfig, dict]:
         prompt = (
             f"Fix this issue in {filepath}:\n"
             f"Issue: {issue}\n\n"
@@ -475,8 +799,8 @@ class BuildOrchestrator:
             f"Output the complete corrected file using:\n"
             f"```file:{filepath}\n<complete corrected file>\n```"
         )
-        response, files, cfg = self._generate_with_routing(producer, prompt_to_use=prompt)
-        return files, cfg
+        response, files, cfg, usage = self._generate_with_routing(producer, prompt_to_use=prompt)
+        return files, cfg, usage
 
     def _phase_build(self, spec: str, rules: str):
         if self.ui:
@@ -495,6 +819,14 @@ class BuildOrchestrator:
             self._execute_tasks_parallel(spec, rules)
         else:
             self._execute_tasks_sequential(spec, rules)
+
+        failed_tasks = [task for task in self.state.tasks if task.status == "failed"]
+        if failed_tasks:
+            names = ", ".join(task.name for task in failed_tasks[:3])
+            suffix = "" if len(failed_tasks) <= 3 else f" (+{len(failed_tasks) - 3} more)"
+            raise RuntimeError(
+                f"Build phase failed: {len(failed_tasks)} task(s) failed: {names}{suffix}"
+            )
 
         if self.ui:
             self.ui.phase_end("  Build phase complete")
@@ -568,33 +900,92 @@ class BuildOrchestrator:
             ],
             "deploy_template": self._read_forge_file("deploy.md"),
         }
-        response, files, used_provider = self._generate_with_routing(
+        route_role = specialization if specialization in {
+            "backend", "frontend", "ci", "deploy", "security", "test", "tester",
+        } else agent_name
+        response, files, used_provider, usage = self._generate_with_routing(
             agent_name="builder",
+            route_role=route_role,
+            strict_output=task.contracts == "__spec_api_task__",
             prompt_to_use=prompt_to_use or "",
             fallback_task=task_dict,
             spec=spec,
             rules=rules,
-            decisions=self.state.decisions,
+            decisions=self.bus.get_decisions(),
             project_context=project_context,
         )
+
+        # Normalize paths against the plan — local models routinely add
+        # spurious 'frontend/', 'src/', or 'app/' prefixes the planner didn't ask for.
+        from .agents.base import normalize_paths_against_plan
+        original_paths = [p for p, _ in files]
+        files = normalize_paths_against_plan(files, task.planned_files)
+        normalized_paths = [p for p, _ in files]
+        path_fixes = [
+            (orig, new) for orig, new in zip(original_paths, normalized_paths)
+            if orig != new
+        ]
+        if path_fixes:
+            for orig, new in path_fixes:
+                msg = f"path corrected: {orig} -> {new} (matched planned file)"
+                if self.ui:
+                    self.ui.note(msg)
+                else:
+                    with self._state_lock:
+                        print(f"      ! {msg}")
+            self.audit.log(
+                "task_path_normalized",
+                build_id=self.state.build_id,
+                task_id=task.id,
+                corrections=[{"from": o, "to": n} for o, n in path_fixes],
+            )
+
+        # Validate-and-refeed loop: run executable verifiers in-memory against
+        # the candidate files. On failure, build a fix prompt with the verifier
+        # output and re-invoke the builder. Bounded by MAX_REFEED_ATTEMPTS so
+        # a model that can't fix the bug doesn't loop forever.
+        files, refeed_history = self._refeed_until_clean(
+            task=task, files=files, spec=spec, rules=rules,
+        )
+        if refeed_history:
+            self.audit.log(
+                "task_refeed_summary",
+                build_id=self.state.build_id,
+                task_id=task.id,
+                attempts=len(refeed_history),
+                final_errors=refeed_history[-1].get("remaining_errors", 0),
+            )
+
         writer_agent = self._get_classic_agent("builder", used_provider)
         self.audit.log(
             "task_model_used",
             build_id=self.state.build_id,
             task_id=task.id,
             agent="builder",
+            routed_role=route_role,
             provider=used_provider.name,
             profile=used_provider.profile,
             model=used_provider.model,
         )
+        if usage:
+            self.audit.log(
+                "model_usage",
+                build_id=self.state.build_id,
+                role="builder",
+                task_id=task.id,
+                phase="build",
+                usage=usage,
+            )
 
         # Apply Agentic Firewall
         allowed_files = []
+        blocked_files = []
         for filepath, content in files:
             permitted, reason = self.firewall.validate_file_write(filepath, content)
             if permitted:
                 allowed_files.append((filepath, content))
             else:
+                blocked_files.append((filepath, reason))
                 if not self.ui:
                     with self._state_lock:
                         print(f"      FIREWALL BLOCK: {filepath} ({reason})")
@@ -613,11 +1004,20 @@ class BuildOrchestrator:
                     reason=reason,
                 )
 
+        if blocked_files:
+            blocked_summary = ", ".join(path for path, _ in blocked_files[:3])
+            if len(blocked_files) > 3:
+                blocked_summary += f" (+{len(blocked_files) - 3} more)"
+            raise RuntimeError(f"Firewall blocked task outputs: {blocked_summary}")
+
         self._approval_gate(
             "task_write",
             f"Task '{task.name}' ({agent_name}) is ready to write {len(allowed_files)} files.",
         )
         written = writer_agent.write_files(allowed_files)
+        created_env_files = materialize_env_files(self.project_root, written, firewall=self.firewall)
+        if created_env_files:
+            written = list(written) + created_env_files
 
         # Publish to artifact bus (thread-safe)
         for filepath, content in allowed_files:
@@ -661,6 +1061,13 @@ class BuildOrchestrator:
                 path=path,
                 agent="builder",
             )
+        for path in created_env_files:
+            self.audit.log(
+                "env_materialized",
+                build_id=self.state.build_id,
+                task_id=task.id,
+                path=path,
+            )
         self.audit.log(
             "task_completed",
             build_id=self.state.build_id,
@@ -677,11 +1084,151 @@ class BuildOrchestrator:
         ))
 
         if self.ui:
-            self.ui.task_done(task.name, written)
+            self.ui.task_done(task.name, written, usage=usage)
         else:
+            if usage:
+                with self._state_lock:
+                    print(f"      usage: {_format_usage_for_output(usage)}")
             with self._state_lock:
                 for f in written:
                     print(f"      + {f}")
+
+    def _refeed_until_clean(
+        self,
+        task: TaskState,
+        files: list[tuple[str, str]],
+        spec: str,
+        rules: str,
+    ) -> tuple[list[tuple[str, str]], list[dict]]:
+        """Run executable verifiers; if they find issues, ask the model to fix.
+
+        Returns the (possibly-corrected) files list and a list of per-attempt
+        records for audit logging. Never raises — if the model can't fix the
+        issues, we surface them and let the caller proceed (firewall + Phase
+        4 verification will still gate the build).
+        """
+        from .agents.base import normalize_paths_against_plan
+
+        history: list[dict] = []
+        for attempt in range(self.MAX_REFEED_ATTEMPTS + 1):
+            failures = self._run_inline_verifiers(files)
+            if not failures:
+                if attempt > 0:
+                    msg = f"refeed: issues resolved after {attempt} attempt(s)"
+                    if self.ui:
+                        self.ui.note(msg)
+                    else:
+                        with self._state_lock:
+                            print(f"      ! {msg}")
+                return files, history
+
+            history.append({
+                "attempt": attempt,
+                "remaining_errors": sum(len(r.logs) for r in failures),
+            })
+            if attempt >= self.MAX_REFEED_ATTEMPTS:
+                # Out of attempts — surface and let firewall/Phase 4 handle it
+                msg = (
+                    f"refeed: {sum(len(r.logs) for r in failures)} issue(s) remain "
+                    f"after {attempt} refeed(s); proceeding to firewall + verification"
+                )
+                if self.ui:
+                    self.ui.note(msg)
+                else:
+                    with self._state_lock:
+                        print(f"      ! {msg}")
+                return files, history
+
+            fix_prompt = self._build_refeed_prompt(task, files, failures)
+            msg = f"refeed #{attempt + 1}: fixing {sum(len(r.logs) for r in failures)} issue(s)..."
+            if self.ui:
+                self.ui.note(msg)
+            else:
+                with self._state_lock:
+                    print(f"      ! {msg}")
+
+            try:
+                _resp, new_files, _cfg, _usage = self._generate_with_routing(
+                    agent_name=task.agent or "builder",
+                    prompt_to_use=fix_prompt,
+                    spec=spec, rules=rules,
+                )
+            except Exception as exc:
+                # If the fix attempt itself fails, log and stop refeeding
+                self.audit.log(
+                    "task_refeed_failed",
+                    build_id=self.state.build_id,
+                    task_id=task.id,
+                    attempt=attempt + 1,
+                    error=str(exc),
+                )
+                return files, history
+
+            new_files = normalize_paths_against_plan(new_files, task.planned_files)
+            if not new_files:
+                # Model returned nothing — give up rather than loop on empty
+                return files, history
+
+            # Merge: keep prior files not touched in this attempt, replace those that were
+            merged: dict[str, str] = {p: c for p, c in files}
+            for path, content in new_files:
+                merged[path] = content
+            files = list(merged.items())
+        return files, history
+
+    def _run_inline_verifiers(self, files: list[tuple[str, str]]):
+        """Run executable verifiers against candidate files plus prior bus state."""
+        bus_files = self.bus.export_files_dict()
+        combined = dict(bus_files)
+        for path, content in files:
+            combined[path] = content
+        context = VerificationContext(
+            project_root=self.project_root,
+            files=combined,
+            decisions=self.bus.get_decisions(),
+            contracts=self.registry,
+        )
+        failures = []
+        for verifier_cls in self._INLINE_VERIFIERS:
+            verifier = verifier_cls()
+            if not verifier.applies_to(context):
+                continue
+            result = verifier.run(context)
+            if (not result.passed) and result.severity == "error" and result.retryable:
+                failures.append(result)
+        return failures
+
+    def _build_refeed_prompt(
+        self, task: TaskState, files: list[tuple[str, str]], failures
+    ) -> str:
+        """Compose a fix-only prompt the model can act on without redesigning."""
+        file_blocks = []
+        for path, content in files:
+            file_blocks.append(f"```file:{path}\n{content.rstrip()}\n```")
+
+        issue_lines: list[str] = []
+        for result in failures:
+            issue_lines.append(f"## {result.verifier}")
+            for log in result.logs:
+                issue_lines.append(f"- {log}")
+
+        files_section = "\n\n".join(file_blocks) if file_blocks else "(no files yet)"
+        issues_section = "\n".join(issue_lines)
+
+        return (
+            f"You generated the following files for task '{task.name}':\n\n"
+            f"{files_section}\n\n"
+            f"Static analysis surfaced these issues that must be fixed:\n\n"
+            f"{issues_section}\n\n"
+            "Rules:\n"
+            "1. Fix ONLY the issues listed above.\n"
+            "2. Do not rename files or change paths.\n"
+            "3. Do not introduce new external network URLs.\n"
+            "4. If a function is reported as undefined, either define it or "
+            "remove the call.\n"
+            "5. Return the COMPLETE corrected file(s) using the exact same "
+            "`````file:path` format. Only include files that needed changes."
+        )
 
     def _task_by_id(self, task_id: str):
         """Look up a TaskState by id."""
@@ -818,7 +1365,7 @@ class BuildOrchestrator:
                 contracts_note += "\n\n## Auth Coverage Issues\n"
                 contracts_note += "\n".join(f"- {i}" for i in sec_check["issues"])
 
-        review = self._run_reviewer_with_routing(files_dict, spec, rules + contracts_note)
+        review, review_usage = self._run_reviewer_with_routing(files_dict, spec, rules + contracts_note)
         issues = tuple(review.get("issues", []))
         self._publish_artifact(ReviewArtifact(
             target_path="",
@@ -874,7 +1421,7 @@ class BuildOrchestrator:
                                 issue=issue.get('message', ''),
                                 producer_agent="reviewer",
                             ))
-                            fixed_files, used_provider = self._fix_with_routing(
+                            fixed_files, used_provider, fix_usage = self._fix_with_routing(
                                 producer=producer,
                                 filepath=filepath,
                                 current_content=files_dict[filepath],
@@ -906,6 +1453,15 @@ class BuildOrchestrator:
                                 profile=used_provider.profile,
                                 model=used_provider.model,
                             )
+                            if fix_usage:
+                                self.audit.log(
+                                    "model_usage",
+                                    build_id=self.state.build_id,
+                                    role=producer,
+                                    task_id=f"fix:{filepath}",
+                                    phase="fix",
+                                    usage=fix_usage,
+                                )
                             if not self.ui:
                                 for f in written:
                                     print(f"      ~ {f} (fixed by {producer})")
@@ -923,12 +1479,24 @@ class BuildOrchestrator:
             issue_count=len(review.get("issues", [])),
             fixes_applied=fixes_applied,
         )
+        if review_usage:
+            self.audit.log(
+                "model_usage",
+                build_id=self.state.build_id,
+                role="reviewer",
+                phase="review",
+                usage=review_usage,
+            )
 
         if self.ui:
+            if review_usage:
+                self.ui.note(f"reviewer usage: {_format_usage_for_output(review_usage)}")
             fix_note = f", {fixes_applied} auto-fix(es) applied" if fixes_applied else ""
             status = "passed" if review["passed"] else f"{len(review.get('issues', []))} issue(s)"
             self.ui.phase_end(f"  Review {status}{fix_note}")
         else:
+            if review_usage:
+                print(f"   usage: {_format_usage_for_output(review_usage)}")
             print("")
 
     def _phase_verify(self):
@@ -980,6 +1548,19 @@ class BuildOrchestrator:
                 summary=result.summary,
             )
 
+        warning_failures = [
+            result for result in report.results
+            if (not result.passed)
+            and result.severity == "warning"
+            and result.category.lower() in self.policy.normalized_warning_categories()
+        ]
+        if warning_failures:
+            failed = warning_failures[0]
+            raise RuntimeError(
+                f"Verification warning promoted to failure: {failed.verifier}: "
+                f"{failed.details or failed.summary}"
+            )
+
         if not report.passed:
             failed = report.failed_results()[0]
             raise RuntimeError(
@@ -999,35 +1580,7 @@ class BuildOrchestrator:
         return ""
 
     def _warn_suspicious(self, text: str, name: str) -> None:
-        if not text:
-            return
-
-        patterns = [
-            r"\bexfiltrat(e|ion|ing)\b",
-            r"\bleak\b",
-            r"\bsecret(s)?\b",
-            r"\btoken(s)?\b",
-            r"\bapi[- _]?key(s)?\b",
-            r"\bpassword(s)?\b",
-            r"\bprivate key\b",
-            r"\bssh\b",
-            r"\bcredential(s)?\b",
-            r"\bupload\b",
-            r"\btransfer\b",
-            r"\bsend to\b",
-            r"\bhttp(s)?://\b",
-            r"\bcurl\b",
-            r"\bwget\b",
-            r"\bpastebin\b",
-            r"\bgist\b",
-            r"\bdrive\.google\b",
-            r"\bdropbox\b",
-        ]
-
-        hits = []
-        for pat in patterns:
-            if re.search(pat, text, re.IGNORECASE):
-                hits.append(pat.strip("\\b").replace("\\", ""))
+        hits = find_suspicious_patterns(text)
 
         if hits:
             unique = ", ".join(sorted(set(hits)))
@@ -1052,7 +1605,11 @@ class BuildOrchestrator:
         self.artifact_store.write_snapshot(self.bus.snapshot())
 
     def _validate_policy(self, stack: dict, agents: list[str]) -> None:
-        errors = self.policy.validate_plan(stack, agents)
+        errors = self.policy.validate_plan(stack, agents, provider=self.provider_config.name)
+        if self.policy.support_tier == "supported" and not is_supported_provider(self.provider_config.name):
+            errors.append(
+                f"Support tier 'supported' does not include provider '{self.provider_config.name}'."
+            )
         if errors:
             for error in errors:
                 self.audit.log("policy_violation", build_id=self.state.build_id, message=error)
@@ -1100,10 +1657,12 @@ class BuildOrchestrator:
             "completed_at": self.state.completed_at,
             "policy": {
                 "mode": self.policy.mode,
+                "support_tier": self.policy.support_tier,
                 "approval_mode": self.policy.approval_mode,
                 "approval_gates": self.policy.approval_gates,
                 "require_review": self.policy.require_review,
                 "require_verification": self.policy.require_verification,
+                "fail_on_warning_categories": self.policy.fail_on_warning_categories,
             },
             "tasks": task_counts,
             "files_written": self.state.files_written,
@@ -1118,8 +1677,35 @@ class BuildOrchestrator:
                 if self._verification_report is not None
                 else None
             ),
+            "model_quality": self.quality.snapshot(),
         }
         self.audit.write_report(report)
+
+def find_suspicious_patterns(text: str) -> list[str]:
+    """Return high-signal suspicious input matches.
+
+    Sensitive terms alone are common in build rules. To reduce false positives,
+    only report them when they appear alongside an exfiltration or outbound-transfer
+    indicator in the same input.
+    """
+    if not text:
+        return []
+
+    hits = []
+    lowered = text.lower()
+    high_signal_hit = False
+
+    for pat in HIGH_SIGNAL_SUSPICIOUS_PATTERNS:
+        if re.search(pat, lowered, re.IGNORECASE):
+            high_signal_hit = True
+            hits.append(pat.strip("\\b").replace("\\", ""))
+
+    if high_signal_hit:
+        for pat in SENSITIVE_TERMS:
+            if re.search(pat, lowered, re.IGNORECASE):
+                hits.append(pat.strip("\\b").replace("\\", ""))
+
+    return sorted(set(hits))
 
 
 def _format_decisions(decisions: dict) -> str:
@@ -1149,3 +1735,43 @@ def _format_decisions(decisions: dict) -> str:
         parts.append(f"\n## Directory Structure (all agents must follow this)\n{dir_structure}")
 
     return "\n".join(parts) if parts else str(decisions)
+
+
+def _format_usage_for_output(usage: dict) -> str:
+    return format_usage_summary(usage)
+
+
+def _normalize_planned_files(files: list[str]) -> list[str]:
+    """Rewrite unsafe env-file plans into documentation files and normalize paths."""
+    normalized: list[str] = []
+    seen: set[str] = set()
+
+    for raw_path in files or []:
+        path = str(raw_path or "").strip()
+        if not path:
+            continue
+        while path.startswith("./"):
+            path = path[2:]
+        if _is_blocked_env_path(path):
+            parent = str(Path(path).parent)
+            path = ".env.example" if parent in {"", "."} else f"{parent}/.env.example"
+        if path not in seen:
+            normalized.append(path)
+            seen.add(path)
+    return normalized
+
+
+def _is_blocked_env_path(path: str) -> bool:
+    lowered = path.strip().lower()
+    if not lowered:
+        return False
+    return lowered.endswith("/.env") or lowered in {
+        ".env",
+        ".env.local",
+        ".env.production",
+        ".env.development",
+    } or lowered.endswith((
+        "/.env.local",
+        "/.env.production",
+        "/.env.development",
+    ))

@@ -4,11 +4,14 @@
 # Top-level agents are planner, builder, reviewer, and optional security
 schema_version: 1
 mode: balanced
+support_tier: supported
 approval_mode: off
 approval_gates: []
 allowed_frameworks: []
+allowed_providers: []
 allowed_agents: []
 require_review: false
 require_verification: true
+fail_on_warning_categories: []
 auto_export_openapi: true
 openapi_title: Forge Generated API

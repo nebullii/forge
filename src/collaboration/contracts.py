@@ -399,7 +399,15 @@ def extract_contracts_from_response(
 
     Returns ``{"api": [...], "models": [...], "events": [...]}``.
     """
-    # 1. Explicit contract block
+    # 1. JSON response envelope with top-level `contracts`
+    try:
+        raw = json.loads(response)
+        if isinstance(raw, dict) and isinstance(raw.get("contracts"), dict):
+            return _parse_raw_contracts(raw["contracts"], producer_agent)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+
+    # 2. Explicit contract block
     match = re.search(r"```contracts\s*\n(.*?)```", response, re.DOTALL)
     if match:
         try:
@@ -408,7 +416,7 @@ def extract_contracts_from_response(
         except (json.JSONDecodeError, KeyError, TypeError):
             pass
 
-    # 2. Fallback: code-level extraction
+    # 3. Fallback: code-level extraction
     return _extract_from_code(response, producer_agent)
 
 

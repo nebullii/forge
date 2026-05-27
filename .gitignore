@@ -25,5 +25,7 @@ Thumbs.db
 # Project
 *.log
 test-adk-project/
+local-test/
+website-test/
 .claude/
 CLAUDE.md

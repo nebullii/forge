@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
+from .contracts import extract_contracts_from_response
+
 
 @dataclass(frozen=True)
 class ValidationResult:
@@ -65,7 +67,7 @@ def validate_agent_output(
                 f"expected at least {min_files}"
             ),
             files_found=len(files),
-        )
+            )
 
     # Check for placeholder/stub content in generated files
     for path, content in files:
@@ -73,6 +75,15 @@ def validate_agent_output(
             return ValidationResult(
                 valid=False,
                 reason=f"{agent_name} produced an empty file: {path}",
+                files_found=len(files),
+            )
+
+    if agent_name == "backend":
+        contracts = extract_contracts_from_response(response_text, "backend")
+        if not contracts["api"] and not contracts["models"] and not contracts["events"]:
+            return ValidationResult(
+                valid=False,
+                reason="backend produced no machine-readable contracts",
                 files_found=len(files),
             )
 

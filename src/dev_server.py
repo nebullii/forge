@@ -14,6 +14,9 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from .envfiles import materialize_env_files
+from .security.firewall import AgenticFirewall
+
 MAX_FIX_ATTEMPTS = 5
 
 
@@ -25,6 +28,7 @@ class DevServer:
         self.process = None
         self._provider = None       # cached across fix attempts
         self._provider_config = None
+        self.firewall = AgenticFirewall(audit_log=self.project_path / ".forge" / "firewall_audit.log")
 
     def detect_project_type(self) -> tuple[str, list[str]]:
         """Detect project type and return (type, command)."""
@@ -94,7 +98,7 @@ class DevServer:
             if "fastapi" in content.lower() or "starlette" in content.lower():
                 # Build uvicorn module path: backend/app/main.py → backend.app.main:app
                 module = str(rel.with_suffix("")).replace("/", ".") + ":app"
-                return ("python-uvicorn", ["uvicorn", module, "--reload"])
+                return ("python-uvicorn", ["uvicorn", module])
             if "flask" in content.lower():
                 return ("python-flask", ["python", str(rel)])
 
@@ -115,7 +119,7 @@ class DevServer:
 
             if "fastapi" in content.lower() or "starlette" in content.lower():
                 module = str(rel.with_suffix("")).replace("/", ".") + ":app"
-                return ("python-uvicorn", ["uvicorn", module, "--reload"])
+                return ("python-uvicorn", ["uvicorn", module])
             if "flask" in content.lower():
                 return ("python-flask", ["python", str(rel)])
 
@@ -181,6 +185,26 @@ class DevServer:
                     pass
         return None
 
+    def _frontend_runtime_command(self, frontend_dir: Path, frontend_cmd: list[str], port: int) -> list[str]:
+        """Normalize frontend dev command so common tools use the requested port."""
+        command = list(frontend_cmd)
+        package_json = frontend_dir / "package.json"
+        script_text = ""
+        try:
+            data = json.loads(package_json.read_text())
+            scripts = data.get("scripts", {})
+            if command[:3] == ["npm", "run", "dev"]:
+                script_text = str(scripts.get("dev", ""))
+            elif command[:3] == ["npm", "run", "start"]:
+                script_text = str(scripts.get("start", ""))
+        except (json.JSONDecodeError, OSError):
+            script_text = ""
+
+        lowered = script_text.lower()
+        if "vite" in lowered:
+            command.extend(["--", "--host", "127.0.0.1", "--port", str(port)])
+        return command
+
     def run(self, port: int = 8080, auto_fix: bool = True):
         """Run the development server with optional crash auto-fix.
 
@@ -190,6 +214,10 @@ class DevServer:
             port: Port number for the server.
             auto_fix: If True, use the DebugAgent to fix crashes and restart.
         """
+        created_env_files = materialize_env_files(self.project_path, firewall=self.firewall)
+        for path in created_env_files:
+            print(f"Materialized env file: {path}")
+
         project_type, command = self.detect_project_type()
 
         if project_type == "unknown":
@@ -203,9 +231,16 @@ class DevServer:
         # Detect frontend for full-stack projects
         frontend = None
         frontend_process = None
+        display_port = port
+        backend_port = port
         if project_type in ("python-uvicorn", "python-flask"):
             frontend = self._detect_frontend()
             if frontend:
+                # For full-stack projects, put the actual website on the requested
+                # port and move the API to the next port instead of forcing users
+                # to guess where the frontend ended up.
+                display_port = port
+                backend_port = port + 1
                 frontend_dir, frontend_cmd = frontend
                 # Install frontend deps
                 if not (frontend_dir / "node_modules").exists():
@@ -219,9 +254,9 @@ class DevServer:
         if project_type == "python-uvicorn":
             if not auto_fix:
                 command.append("--reload")
-            command.extend(["--port", str(port)])
+            command.extend(["--port", str(backend_port)])
         elif project_type == "python-flask":
-            command.extend(["--port", str(port)])
+            command.extend(["--port", str(backend_port)])
         elif project_type == "static":
             command.append(str(port))
         elif project_type == "node":
@@ -236,23 +271,82 @@ class DevServer:
 
         signal.signal(signal.SIGINT, signal_handler)
 
-        # Start frontend in background if detected
+        # Start frontend in background if detected — capture stderr for auto-fix
+        frontend_stderr_lines = []
         if frontend:
             frontend_dir, frontend_cmd = frontend
-            frontend_port = port + 1
-            os.environ["PORT"] = str(frontend_port)
+            frontend_port = display_port
+            frontend_cmd = self._frontend_runtime_command(frontend_dir, frontend_cmd, frontend_port)
+            frontend_env = os.environ.copy()
+            frontend_env["PORT"] = str(frontend_port)
+            frontend_env["VITE_API_URL"] = f"http://localhost:{backend_port}"
             print(f"Starting frontend on port {frontend_port}")
-            print(f"   http://localhost:{frontend_port}")
+            print(f"   Website: http://localhost:{frontend_port}")
+            print(f"   API:     http://localhost:{backend_port}")
             print()
+            # Install deps
+            if not (frontend_dir / "node_modules").exists():
+                subprocess.run(
+                    ["npm", "install"], cwd=frontend_dir,
+                    capture_output=True, text=True,
+                )
             frontend_process = subprocess.Popen(
                 frontend_cmd, cwd=frontend_dir,
-                stdout=sys.stdout, stderr=sys.stderr,
+                stdout=sys.stdout, stderr=subprocess.PIPE, env=frontend_env,
             )
+
+            # Monitor frontend stderr in a background thread
+            import threading
+
+            def _read_frontend_stderr():
+                for line in frontend_process.stderr:
+                    decoded = line.decode("utf-8", errors="replace")
+                    sys.stderr.write(decoded)
+                    sys.stderr.flush()
+                    frontend_stderr_lines.append(decoded)
+
+            fe_thread = threading.Thread(target=_read_frontend_stderr, daemon=True)
+            fe_thread.start()
+
+            # Give frontend a moment to start, then check if it crashed
+            time.sleep(3)
+            if frontend_process.poll() is not None and frontend_process.returncode != 0:
+                fe_thread.join(timeout=2)
+                fe_stderr = "".join(frontend_stderr_lines)
+                print(f"\n--- Frontend crashed (exit code {frontend_process.returncode}) ---\n")
+                if auto_fix and fe_stderr.strip():
+                    fixed = self._try_auto_fix(fe_stderr, 0)
+                    if fixed:
+                        print("  Restarting frontend...\n")
+                        frontend_stderr_lines.clear()
+                        frontend_process = subprocess.Popen(
+                            frontend_cmd, cwd=frontend_dir,
+                            stdout=sys.stdout, stderr=subprocess.PIPE, env=frontend_env,
+                        )
+                        fe_thread = threading.Thread(target=_read_frontend_stderr, daemon=True)
+                        fe_thread.start()
+                        time.sleep(2)
+                        if frontend_process.poll() is None:
+                            pass
+                        else:
+                            print(f"\n--- Frontend crashed again (exit code {frontend_process.returncode}) ---\n")
+                            print("Fix the frontend error above and run forge dev again.")
+                            return
+                    else:
+                        print("Fix the frontend error above and run forge dev again.")
+                        return
+                else:
+                    print("Fix the frontend error above and run forge dev again.")
+                    return
 
         attempt = 0
         while True:
-            print(f"Starting {project_type} server on port {port}")
-            print(f"   http://localhost:{port}")
+            print(f"Starting {project_type} server on port {backend_port}")
+            if frontend:
+                print(f"   Website: http://localhost:{display_port}")
+                print(f"   API:     http://localhost:{backend_port}")
+            else:
+                print(f"   http://localhost:{backend_port}")
             if auto_fix:
                 print(f"   Auto-fix enabled ({MAX_FIX_ATTEMPTS - attempt} attempts remaining)")
             print()
@@ -264,7 +358,7 @@ class DevServer:
 
             # Server crashed
             attempt += 1
-            print(f"\n--- Server crashed (exit code {exit_code}) ---\n")
+            print(f"\n--- Backend crashed (exit code {exit_code}) ---\n")
 
             if not auto_fix or attempt > MAX_FIX_ATTEMPTS:
                 if attempt > MAX_FIX_ATTEMPTS:

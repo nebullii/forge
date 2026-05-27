@@ -1,0 +1,12 @@
+{
+  "files": [
+    {"path": "backend/main.py", "content": "print(1)\n"}
+  ],
+  "contracts": {
+    "api": [
+      {"method": "GET", "path": "/health", "response_schema": {"ok": "bool"}, "auth": "none"}
+    ],
+    "models": [],
+    "events": []
+  }
+}

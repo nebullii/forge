@@ -205,6 +205,27 @@ class AgenticFirewall:
         self._log_event(filepath, "PERMITTED")
         return True, "Success"
 
+    def validate_materialized_env_write(self, filepath: str, source_path: str, content: str) -> Tuple[bool, str]:
+        """Allow controlled .env materialization from a documented example file.
+
+        This is for control-plane copies only. Agents still may not generate real
+        `.env` files directly.
+        """
+        normalized = filepath.strip()
+        if not (normalized == ".env" or normalized.endswith("/.env")):
+            return False, f"Materialized env target '{filepath}' is not a supported .env path."
+        if not source_path.strip().endswith(".env.example"):
+            return False, f"Materialized env source '{source_path}' must be a .env.example file."
+
+        # Scan content for code-level exploit patterns even though the path is allowed.
+        for pattern in self.policy.get("blocked_patterns", []):
+            if re.search(pattern, content):
+                self._log_violation(filepath, f"MALICIOUS_CONTENT_PATTERN: {pattern}")
+                return False, f"Potentially malicious code pattern detected in '{filepath}'."
+
+        self._log_event(filepath, "CONTROLLED_ENV_MATERIALIZATION", source_path)
+        return True, "Success"
+
     def _log_event(self, target: str, action: str, detail: str = ""):
         log_entry = {
             "timestamp": datetime.now().isoformat(),

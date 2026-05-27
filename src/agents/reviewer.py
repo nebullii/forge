@@ -1,5 +1,6 @@
 """Reviewer agent -- validates generated code for correctness."""
 
+import json
 import re
 import yaml
 
@@ -16,20 +17,13 @@ You look for:
 - Security issues (hardcoded secrets, SQL injection, etc.)
 - Missing error handling for critical paths
 
-Output your review as YAML:
-
-passed: true/false
-issues:
-  - file: "path/to/file"
-    severity: error/warning
-    message: "Description of the issue"
-
-If no issues found:
-
-passed: true
-issues: []
-
-Output ONLY the YAML.
+Output ONLY a single JSON object:
+{
+  "passed": true,
+  "issues": [
+    {"file": "path/to/file", "severity": "error", "message": "Description of the issue"}
+  ]
+}
 """
 class ReviewerAgent(BaseAgent):
     name = "reviewer"
@@ -78,28 +72,35 @@ Review these files for correctness. Check for:
 4. Security issues (hardcoded secrets, injection vulnerabilities)
 5. Missing error handling for critical paths
 
-Output your review as YAML:
+Output ONLY this JSON object:
+{{
+  "passed": true,
+  "issues": [
+    {{"file": "path/to/file", "severity": "error", "message": "Description of the issue"}}
+  ]
+}}
 
-passed: true/false
-issues:
-  - file: "path/to/file"
-    severity: error
-    message: "Description of the issue"
-  - file: "path/to/other/file"
-    severity: warning
-    message: "Description"
+If no issues found, return:
+{{
+  "passed": true,
+  "issues": []
+}}"""
 
-If no issues found, output:
-
-passed: true
-issues: []
-
-Output ONLY the YAML."""
-
-        response = self.invoke(prompt)
+        response = self.invoke_json(prompt)
         return self._parse_review(response)
+
     def _parse_review(self, response: str) -> dict:
         text = response.strip()
+
+        try:
+            result = json.loads(text)
+        except (json.JSONDecodeError, ValueError):
+            result = None
+        if isinstance(result, dict):
+            return {
+                "passed": result.get("passed", True),
+                "issues": result.get("issues", []),
+            }
 
         if text.startswith("```"):
             lines = text.split("\n")

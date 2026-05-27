@@ -9,7 +9,9 @@ from typing import Optional
 CONFIG_DIR = Path.home() / ".forge"
 CONFIG_FILE = CONFIG_DIR / "config.yaml"
 
-DEFAULT_CONFIG = """\
+OLLAMA_URL = "http://localhost:11434"
+
+CLOUD_FIRST_CONFIG = """\
 # Forge Configuration
 # The first provider with valid credentials will be used.
 # API keys can be set here or as environment variables.
@@ -48,6 +50,197 @@ model_routing:
   security: ollama:reason_local
 """
 
+# Kept for callers that imported DEFAULT_CONFIG directly.
+DEFAULT_CONFIG = CLOUD_FIRST_CONFIG
+
+
+# Ranked preference of locally-installed models. Earlier patterns win.
+# General-purpose fallback when role-specific lists don't match.
+_LOCAL_PREFERENCE = (
+    "qwen2.5-coder:32b",
+    "qwen2.5-coder:14b",
+    "qwen2.5-coder:7b",
+    "qwen2.5-coder",
+    "granite-code:34b",
+    "granite-code:20b",
+    "granite-code:8b",
+    "granite-code",
+    "deepseek-coder",
+    "qwen3:32b",
+    "qwen3:14b",
+    "qwen3",
+    "qwen2.5:32b",
+    "qwen2.5:14b",
+    "qwen2.5",
+    "llama3.3",
+    "llama3.1:70b",
+    "llama3.1",
+    "llama3.2",
+    "llama3",
+    "mistral",
+)
+
+# Code-tuned models — strongest for the builder role.
+_CODER_PREFERENCE = (
+    "qwen2.5-coder:32b",
+    "qwen2.5-coder:14b",
+    "qwen2.5-coder:7b",
+    "qwen2.5-coder",
+    "granite-code:34b",
+    "granite-code:20b",
+    "granite-code:8b",
+    "granite-code",
+    "deepseek-coder",
+    "codellama",
+)
+
+# Reasoning-leaning models — used for planning and review where breadth and
+# instruction-following matter more than code-specialisation.
+_REASONING_PREFERENCE = (
+    "deepseek-r1",
+    "qwen3:32b",
+    "qwen3:14b",
+    "qwen3",
+    "qwen2.5:32b",
+    "qwen2.5:14b",
+    "qwen2.5",
+    "llama3.3",
+    "llama3.1:70b",
+    "llama3.1",
+    "llama3.2",
+    "llama3",
+    "mistral",
+)
+
+
+def detect_ollama_models(base_url: str = OLLAMA_URL, timeout: float = 1.5) -> list[str]:
+    """Return installed Ollama model tags, or [] if Ollama is unreachable."""
+    try:
+        import requests
+        response = requests.get(f"{base_url.rstrip('/')}/api/tags", timeout=timeout)
+        response.raise_for_status()
+        payload = response.json()
+    except Exception:
+        return []
+    names: list[str] = []
+    for item in payload.get("models", []) or []:
+        name = item.get("model") or item.get("name")
+        if name:
+            names.append(name)
+    return names
+
+
+def _pick_by_preferences(
+    installed: list[str], preferences: tuple[str, ...]
+) -> Optional[str]:
+    """Pick the first model whose name starts with any preference prefix."""
+    lowered = [(m, m.lower()) for m in installed]
+    for pref in preferences:
+        for original, lower in lowered:
+            if lower.startswith(pref):
+                return original
+    return None
+
+
+def pick_local_model(installed: list[str]) -> Optional[str]:
+    """Pick the best-fit model from the installed set."""
+    if not installed:
+        return None
+    return _pick_by_preferences(installed, _LOCAL_PREFERENCE) or installed[0]
+
+
+def pick_role_models(installed: list[str]) -> dict[str, str]:
+    """Pick planner / coder / reviewer models from the installed set.
+
+    Strategy:
+      - planner: prefer a reasoning model (qwen3, deepseek-r1) so the
+        upstream decision-making isn't constrained by a coder-tuned lens.
+      - coder: prefer a code-tuned model (qwen2.5-coder, granite-code).
+      - reviewer: prefer a reasoning model that is DIFFERENT from coder so
+        we don't share blind spots. Falls back to coder when there is only
+        one model installed (the wizard warns the user when this happens).
+    """
+    if not installed:
+        fallback = "llama3.1:8b"
+        return {"primary": fallback, "coder": fallback, "reviewer": fallback}
+
+    coder = _pick_by_preferences(installed, _CODER_PREFERENCE)
+    reasoning = _pick_by_preferences(installed, _REASONING_PREFERENCE)
+    fallback = pick_local_model(installed) or installed[0]
+
+    primary = reasoning or fallback
+    coder = coder or fallback
+
+    # Reviewer: anything reasoning-leaning that isn't the coder model
+    reviewer = None
+    for model in [reasoning] + [m for m in installed if m != coder]:
+        if model and model != coder:
+            reviewer = model
+            break
+    reviewer = reviewer or fallback
+
+    return {"primary": primary, "coder": coder, "reviewer": reviewer}
+
+
+def build_local_first_config(installed: list[str]) -> str:
+    """Render an Ollama-first config YAML for the detected models."""
+    roles = pick_role_models(installed)
+    primary = roles["primary"]
+    coder = roles["coder"]
+    reviewer = roles["reviewer"]
+    return f"""\
+# Forge Configuration (local-first)
+# Detected Ollama on {OLLAMA_URL} — using it as the primary provider.
+# Cloud providers remain as fallbacks; set their API keys to enable them.
+
+providers:
+  - name: ollama
+    base_url: {OLLAMA_URL}
+    model: {primary}
+    discover: true
+    priority: 10
+    profiles:
+      primary:
+        model: {primary}
+        capabilities: [reasoning, local]
+      coder:
+        model: {coder}
+        capabilities: [code, local]
+      reviewer:
+        model: {reviewer}
+        capabilities: [reasoning, review, local]
+
+  - name: anthropic
+    api_key: ${{ANTHROPIC_API_KEY}}
+    model: claude-sonnet-4-20250514
+    priority: 5
+
+  - name: openai
+    api_key: ${{OPENAI_API_KEY}}
+    model: gpt-4o
+    priority: 4
+
+model_routing:
+  planner: ollama:primary
+  builder: ollama:coder
+  reviewer: ollama:reviewer
+  security: ollama:reviewer
+"""
+
+
+def generate_default_config(detect: bool = True) -> tuple[str, list[str]]:
+    """Return ``(yaml_text, installed_local_models)``.
+
+    When *detect* is True and Ollama is running with at least one model
+    installed, returns the local-first config. Otherwise returns the cloud
+    default.
+    """
+    if detect:
+        installed = detect_ollama_models()
+        if installed:
+            return build_local_first_config(installed), installed
+    return CLOUD_FIRST_CONFIG, []
+
 
 def load_config() -> dict:
     """Load user config from ~/.forge/config.yaml."""
@@ -66,12 +259,33 @@ def save_config(config: dict):
 
 
 def ensure_config() -> dict:
-    """Load config, creating default if it doesn't exist."""
+    """Load config, creating default if it doesn't exist.
+
+    First-run path: detect a running Ollama with installed models and write
+    a local-first config. Otherwise fall back to the cloud default.
+    """
     if not CONFIG_FILE.exists():
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        CONFIG_FILE.write_text(DEFAULT_CONFIG)
+        yaml_text, installed = generate_default_config(detect=True)
+        CONFIG_FILE.write_text(yaml_text)
         print(f"Created config at {CONFIG_FILE}")
-        print("Edit it to add your API keys, or set environment variables.")
+        if installed:
+            roles = pick_role_models(installed)
+            unique_models = {roles["primary"], roles["coder"], roles["reviewer"]}
+            print(
+                f"Detected local Ollama with {len(installed)} model(s). "
+                f"Roles: planner={roles['primary']}, builder={roles['coder']}, "
+                f"reviewer={roles['reviewer']}."
+            )
+            if len(unique_models) < 2:
+                print(
+                    "  ! Only one usable model installed — builder and reviewer "
+                    "will share it. Co-blind review is weak; "
+                    "consider `ollama pull qwen2.5-coder:7b` for a second model."
+                )
+            print("Cloud providers remain available as fallbacks; set API keys to enable them.")
+        else:
+            print("Edit it to add your API keys, or set environment variables.")
     return load_config()
 
 
