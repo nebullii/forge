@@ -9,11 +9,14 @@ from src.cli import cmd_spec
 from src.control_plane import (
     _ensure_task_dependencies_complete,
     _events_payload,
+    _jobs_for_project,
     _select_provider_data,
     _sse_event,
     run_control_plane,
+    run_worker,
     start_build_job,
 )
+from src.job_queue import JobQueue
 from src.state import TaskState
 from src.specapi import compile_task_graph, parse_spec_text
 
@@ -118,6 +121,20 @@ def test_parse_spec_api_rejects_unsupported_version():
     assert "unsupported Spec API version '9.9'" in doc.diagnostics[0].message
 
 
+def test_parse_spec_api_accepts_v02_as_forward_compatible():
+    doc = parse_spec_text("""
+.project
+  spec_api_version: 0.2
+  type: web_app
+""")
+
+    graph = compile_task_graph(doc)
+
+    assert doc.valid
+    assert doc.spec_api_version == "0.2"
+    assert graph.valid
+
+
 def test_compile_task_graph_orders_frontend_after_backend():
     graph = compile_task_graph(parse_spec_text(SPEC))
     tasks = {task.id: task for task in graph.tasks}
@@ -175,6 +192,28 @@ def test_control_plane_handler_is_constructible(tmp_path):
 
     handler = _make_handler(project)
     assert handler.server_version == "ForgeControlPlane/0.1"
+
+
+def test_dashboard_html_references_core_api_endpoints():
+    from src.control_plane import _dashboard_html
+
+    html = _dashboard_html()
+
+    assert "Forge Dashboard" in html
+    assert "/api/builds" in html
+    assert "/api/tasks" in html
+    assert "/api/agents" in html
+
+
+def test_agent_capability_registry_exposes_agent_card():
+    from src.agents.registry import agent_card, resolve_agent_for_task
+
+    card = agent_card()
+
+    assert card["name"] == "forge"
+    assert resolve_agent_for_task("builder", "frontend") == "frontend"
+    assert resolve_agent_for_task("builder", "ci") == "ci"
+    assert any(item["name"] == "backend" for item in card["capabilities"])
 
 
 def test_control_plane_selects_named_provider_profile():
@@ -237,6 +276,35 @@ def test_start_build_job_runs_worker(monkeypatch, tmp_path):
     control_audit = (tmp_path / ".forge" / "control_audit.jsonl").read_text()
     assert "job_queued" in control_audit
     assert "job_completed" in control_audit
+
+
+def test_start_build_job_can_enqueue_durable_job(tmp_path):
+    job = start_build_job(tmp_path, {"feature": "x", "queue": True})
+
+    assert job.status == "queued"
+    queued = JobQueue(tmp_path / ".forge").list(tmp_path)
+    assert queued[0].id == job.id
+    assert queued[0].payload["feature"] == "x"
+    assert any(item["id"] == job.id for item in _jobs_for_project(tmp_path))
+
+
+def test_worker_processes_one_queued_job(monkeypatch, tmp_path, capsys):
+    import src.control_plane as control_plane
+
+    def fake_worker(project_root, payload):
+        assert project_root == tmp_path
+        assert payload["feature"] == "worker-test"
+        return "build-worker"
+
+    monkeypatch.setattr(control_plane, "_run_build_worker", fake_worker)
+    start_build_job(tmp_path, {"feature": "worker-test", "queue": True})
+
+    run_worker(tmp_path, once=True)
+
+    jobs = JobQueue(tmp_path / ".forge").list(tmp_path)
+    assert jobs[0].status == "completed"
+    assert jobs[0].build_id == "build-worker"
+    assert "Completed build job" in capsys.readouterr().out
 
 
 def test_events_payload_includes_audit_and_state(tmp_path):

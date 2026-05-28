@@ -6,7 +6,8 @@ Forge is a spec-driven software factory with one public execution path:
 
 ```text
 forge build
-  -> Planner
+  -> Spec API compiler when structured primitives are present
+  -> Planner fallback for free-form specs
   -> Builder
        setup
        backend + ci + deploy   (parallel where safe)
@@ -32,7 +33,7 @@ other; they exchange machine-readable artifacts through the collaboration layer.
 - Starts the build orchestrator
 - Exposes build, status, contracts, config, dev, and fix commands
 
-### 2. Control Plane
+### 2. Build Control Plane
 
 `src/orchestrator.py`
 
@@ -47,7 +48,24 @@ Responsible for:
 - audit and report writing
 - resume behavior
 
-### 3. Agent Layer
+### 3. REST API Plane
+
+`src/control_plane.py`
+
+The local API plane exposes Forge's build machinery as JSON endpoints:
+
+- spec validation and compilation
+- build and task job submission
+- build state, task graph, events, artifacts, contracts, and audit logs
+- model routing and model health
+- agent capability metadata
+- OpenAPI contract export
+
+`forge serve --ui` serves a read-only dashboard backed by these endpoints.
+Queued jobs can be persisted to `.forge/jobs.sqlite` and executed by
+`forge worker`.
+
+### 4. Agent Layer
 
 `src/agents/`
 
@@ -69,7 +87,10 @@ Optional cross-cutting analyzer:
 
 - `SecurityAgent`
 
-### 4. Collaboration Layer
+Capability metadata lives in `src/agents/registry.py` and is exposed through
+`GET /.well-known/agent.json`.
+
+### 5. Collaboration Layer
 
 `src/collaboration/`
 
@@ -92,7 +113,7 @@ Primary artifact types:
 - `ReworkRequestArtifact`
 - `VerificationArtifact`
 
-### 5. Verification Layer
+### 6. Verification Layer
 
 `src/verification/`
 
@@ -102,7 +123,7 @@ Deterministic checks that run after review. Current framework includes:
 - machine-readable verification results
 - structured verification reports
 
-### 6. Security Layer
+### 7. Security Layer
 
 `src/security/`
 
@@ -110,7 +131,7 @@ Deterministic checks that run after review. Current framework includes:
 - path/content policies live in `.forge/firewall_policy.json`
 - decisions are logged to `.forge/firewall_audit.log`
 
-### 7. State and Audit
+### 8. State and Audit
 
 - `src/state.py` — resumable build state
 - `src/audit.py` — append-only build audit and summary reports
@@ -124,6 +145,7 @@ Persisted build files include:
 - `.forge/artifacts.json`
 - `.forge/contracts.json`
 - `.forge/verification.json`
+- `.forge/jobs.sqlite`
 
 ---
 
@@ -140,6 +162,10 @@ Dependency rules:
 
 Tasks in the same specialization run sequentially.
 Independent specializations may run in parallel.
+
+REST-submitted jobs run in-process by default. Passing `{"queue": true}` to the
+REST API stores the job in SQLite so a separate `forge worker` process can claim
+and execute it.
 
 ---
 

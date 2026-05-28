@@ -15,6 +15,7 @@ DIRECTIVE_RE = re.compile(r"^(?P<indent>\s*)\.(?P<type>[a-z][a-z0-9_]*(?:\.[a-z]
 API_ACTIONS = {"list", "get", "create", "update", "delete"}
 HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 FIELD_TYPES = {"string", "text", "email", "password", "integer", "number", "float", "boolean", "date", "datetime", "money", "uuid", "json"}
+SUPPORTED_SPEC_API_VERSIONS = {"0.1", "0.2"}
 
 
 def parse_spec_file(path: Path) -> SpecDocument:
@@ -250,12 +251,12 @@ def _validate_spec_api_version(doc: SpecDocument) -> None:
     project = next((item for item in doc.primitives if item.type == "project"), None)
     version = str((project.body.get("spec_api_version") if project else "") or "0.1")
     doc.spec_api_version = version
-    if version != "0.1":
+    if version not in SUPPORTED_SPEC_API_VERSIONS:
         line = project.line if project else 1
         doc.diagnostics.append(SpecDiagnostic(
             line=line,
             severity="error",
-            message=f"unsupported Spec API version '{version}' (supported: 0.1)",
+            message=f"unsupported Spec API version '{version}' (supported: {', '.join(sorted(SUPPORTED_SPEC_API_VERSIONS))})",
         ))
 
 

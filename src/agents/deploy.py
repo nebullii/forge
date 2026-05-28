@@ -65,6 +65,7 @@ class DeployAgent(BaseAgent):
         decisions: dict,
         deploy_template: str = "",
         rules: str = "",
+        on_chunk=None,
     ) -> str:
         """Generate deployment config files. Returns raw LLM response."""
         import json
@@ -105,4 +106,6 @@ Use this format for each file:
 
 Match the tech stack and target platform. Include all required environment variables."""
 
+        if on_chunk is not None:
+            return self.invoke_streaming(prompt, on_chunk=on_chunk)
         return self.invoke(prompt)

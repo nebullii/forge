@@ -1,10 +1,24 @@
 """Tests for orchestrator helpers."""
 
+import json
+
 from src.orchestrator import (
     BuildOrchestrator,
     _normalize_planned_files,
     find_suspicious_patterns,
 )
+
+
+class StrictBuilderTestAgent:
+    def extract_files(self, response):
+        files = []
+        for part in response.split("```file:")[1:]:
+            path, content = part.split("\n", 1)
+            files.append((path, content.rsplit("```", 1)[0]))
+        return files
+
+    def invoke_json(self, prompt):
+        raise AssertionError("model should not be called")
 
 
 def test_find_suspicious_patterns_ignores_default_rule_language():
@@ -96,3 +110,27 @@ def test_spec_api_plan_falls_back_for_plain_specs(tmp_path):
 
     assert plan is None
     assert usage is None
+
+
+def test_strict_spec_api_setup_uses_deterministic_scaffold(tmp_path):
+    orch = BuildOrchestrator.__new__(BuildOrchestrator)
+    agent = StrictBuilderTestAgent()
+    task = {"specialization": "setup", "name": "Set up project scaffold"}
+    spec = "# Project: Freelancer CRM\n"
+    decisions = {
+        "stack": {
+            "framework": "fastapi",
+            "frontend": "react",
+            "database": "sqlite",
+            "template_family": "web-app",
+        }
+    }
+
+    response = orch._strict_builder_response(agent, "prompt", task, spec, decisions)
+    payload = json.loads(response)
+    paths = {item["path"] for item in payload["files"]}
+
+    assert "backend/main.py" in paths
+    assert "frontend/package.json" in paths
+    assert "frontend/index.html" in paths
+    assert "frontend/src/main.jsx" in paths

@@ -44,6 +44,7 @@ class BuilderAgent(BaseAgent):
         project_context: str = "",
         backend_files: list[str] | None = None,
         deploy_template: str = "",
+        on_chunk=None,
     ) -> str:
         """Execute a planned task using the appropriate internal specialization."""
         specialization = (
@@ -57,7 +58,9 @@ class BuilderAgent(BaseAgent):
             return deterministic
 
         if specialization == "backend":
-            return self._backend.generate_backend(spec, rules, str(decisions), project_context)
+            return self._backend.generate_backend(
+                spec, rules, str(decisions), project_context, on_chunk=on_chunk
+            )
         if specialization == "frontend":
             return self._frontend.generate_frontend(
                 spec,
@@ -65,15 +68,20 @@ class BuilderAgent(BaseAgent):
                 str(decisions),
                 backend_files=backend_files or [],
                 project_context=project_context,
+                on_chunk=on_chunk,
             )
         if specialization == "ci":
-            return self._ci.generate_ci(spec, decisions, rules)
+            return self._ci.generate_ci(spec, decisions, rules, on_chunk=on_chunk)
         if specialization == "deploy":
-            return self._deploy.generate_deploy(spec, decisions, deploy_template, rules)
+            return self._deploy.generate_deploy(
+                spec, decisions, deploy_template, rules, on_chunk=on_chunk
+            )
 
         build_task = {
             "name": task.get("name", "Build task"),
             "description": task.get("description", ""),
             "files": task.get("files", []),
         }
-        return self._coder.generate_files(build_task, spec, rules, str(decisions), project_context)
+        return self._coder.generate_files(
+            build_task, spec, rules, str(decisions), project_context, on_chunk=on_chunk
+        )

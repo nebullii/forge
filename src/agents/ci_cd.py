@@ -42,7 +42,7 @@ class CIAgent(BaseAgent):
     )
     role = ROLE_INSTRUCTION
 
-    def generate_ci(self, spec: str, decisions: dict, rules: str = "") -> str:
+    def generate_ci(self, spec: str, decisions: dict, rules: str = "", on_chunk=None) -> str:
         """Generate CI/CD config files. Returns raw LLM response."""
         import json
 
@@ -74,4 +74,6 @@ Use this format for each file:
 
 Match the tech stack exactly. Include proper caching for dependencies."""
 
+        if on_chunk is not None:
+            return self.invoke_streaming(prompt, on_chunk=on_chunk)
         return self.invoke(prompt)

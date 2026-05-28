@@ -81,6 +81,7 @@ class BackendAgent(BaseAgent):
         rules: str,
         decisions: str,
         project_context: str = "",
+        on_chunk=None,
     ) -> str:
         """Generate all backend files. Returns raw LLM response."""
         prompt = f"""\
@@ -116,4 +117,6 @@ Return ONLY this JSON object:
   }}
 }}"""
 
+        if on_chunk is not None:
+            return self.invoke_streaming(prompt, on_chunk=on_chunk, json_mode=True)
         return self.invoke_json(prompt)

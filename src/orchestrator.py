@@ -57,6 +57,7 @@ from .providers import create_provider
 from .providers.base import ProviderConfig
 from .agents import PlannerAgent, BuilderAgent, CoderAgent, ReviewerAgent
 from .agents import BackendAgent, FrontendAgent, SecurityAgent, CIAgent, DeployAgent
+from .agents.registry import resolve_agent_for_task
 from .config import load_config
 from .audit import BuildAuditLogger
 from .policy import load_build_policy
@@ -164,7 +165,7 @@ class BuildOrchestrator:
         self.verification_registry = VerificationRegistry()
         self._verification_report = None
 
-        self._classic_agents: dict = {}  # lazy: agent_name → agent instance
+        self._agent_cache: dict = {}  # lazy: agent_name → agent instance
         self._skills = skills
 
         # Collaboration layer — shared artifact bus and contract registry
@@ -190,6 +191,7 @@ class BuildOrchestrator:
         self.provider_config = provider_config
         self._build_start_time: Optional[float] = None
         self._state_lock = threading.Lock()  # protects state mutations in parallel mode
+        self._parallel_build_active = False
 
     def run(self, feature: Optional[str] = None):
         """Run the build (or incremental feature addition)."""
@@ -483,8 +485,8 @@ class BuildOrchestrator:
             "tasks": tasks,
         }, None
 
-    def _get_classic_agent(self, agent_name: str, provider_config: Optional[ProviderConfig] = None):
-        """Return (or lazily create) a classic-mode agent for the given role and provider."""
+    def _get_runtime_agent(self, agent_name: str, provider_config: Optional[ProviderConfig] = None):
+        """Return (or lazily create) a runtime agent for the given role and provider."""
         cls_map = {
             "planner": PlannerAgent,
             "builder": BuilderAgent,
@@ -498,13 +500,13 @@ class BuildOrchestrator:
         }
         cfg = provider_config or self.provider_config
         key = (agent_name, cfg.name, cfg.profile, cfg.model)
-        if key not in self._classic_agents:
+        if key not in self._agent_cache:
             cls = cls_map.get(agent_name, CoderAgent)
             provider = create_provider(cfg)
-            self._classic_agents[key] = cls(
+            self._agent_cache[key] = cls(
                 provider, self.project_root, skills_loader=self._skills
             )
-        return self._classic_agents[key]
+        return self._agent_cache[key]
 
     def _log_route_selection(self, role: str, decision: RouteDecision, mode: str, attempt: int) -> None:
         self.audit.log(
@@ -562,7 +564,7 @@ class BuildOrchestrator:
         for idx, decision in enumerate(chain):
             attempt = idx + 1
             self._log_route_selection("planner", decision, "plan", attempt)
-            agent = self._get_classic_agent("planner", decision.provider_config)
+            agent = self._get_runtime_agent("planner", decision.provider_config)
             failure: Optional[Exception] = None
             try:
                 if feature:
@@ -636,7 +638,7 @@ class BuildOrchestrator:
         for idx, decision in enumerate(chain):
             attempt = idx + 1
             self._log_route_selection("reviewer", decision, "review", attempt)
-            agent = self._get_classic_agent("reviewer", decision.provider_config)
+            agent = self._get_runtime_agent("reviewer", decision.provider_config)
             failure: Optional[Exception] = None
             try:
                 review = agent.review_files(files_dict, spec, rules)
@@ -699,11 +701,19 @@ class BuildOrchestrator:
             attempt = idx + 1
             self._log_route_selection(routing_role, decision, "build", attempt)
             failure: Optional[Exception] = None
+            on_chunk = self._build_stream_callback(routing_role, attempt)
             try:
                 if role == "builder":
-                    agent = self._get_classic_agent("builder", decision.provider_config)
+                    agent = self._get_runtime_agent("builder", decision.provider_config)
                     if strict_output and prompt_to_use:
-                        response = agent.invoke_json(prompt_to_use)
+                        response = self._strict_builder_response(
+                            agent,
+                            prompt_to_use,
+                            fallback_task or {"name": "Task", "description": "", "files": []},
+                            spec,
+                            decisions,
+                            on_chunk=on_chunk,
+                        )
                     else:
                         response = agent.build_task(
                             fallback_task or {"name": "Task", "description": "", "files": []},
@@ -713,19 +723,26 @@ class BuildOrchestrator:
                             project_context=project_context,
                             backend_files=(fallback_task or {}).get("backend_files", []),
                             deploy_template=(fallback_task or {}).get("deploy_template", ""),
+                            on_chunk=on_chunk,
                         )
                 elif prompt_to_use:
-                    agent = self._get_classic_agent(role, decision.provider_config)
-                    response = agent.invoke(prompt_to_use)
+                    agent = self._get_runtime_agent(role, decision.provider_config)
+                    if on_chunk is not None:
+                        response = agent.invoke_streaming(prompt_to_use, on_chunk=on_chunk)
+                    else:
+                        response = agent.invoke(prompt_to_use)
                 else:
-                    agent = self._get_classic_agent("coder", decision.provider_config)
+                    agent = self._get_runtime_agent("coder", decision.provider_config)
                     response = agent.generate_files(
                         fallback_task or {"name": "Task", "description": "", "files": []},
                         spec,
                         rules,
                         decisions,
                         project_context,
+                        on_chunk=on_chunk,
                     )
+                if self.ui and on_chunk is not None:
+                    self.ui.stream_stop()
 
                 if strict_output:
                     from .agents.contracts import parse_agent_output_json, validate_agent_output as validate_structured_agent_output
@@ -758,6 +775,8 @@ class BuildOrchestrator:
                 reason = validation.reason
                 failure = RuntimeError(reason)
             except Exception as exc:
+                if self.ui and on_chunk is not None:
+                    self.ui.stream_stop()
                 reason = str(exc)
                 failure = exc
 
@@ -781,6 +800,41 @@ class BuildOrchestrator:
                 break
             self._notify_route_fallback(routing_role, decision, reason, attempt + 1)
         raise RuntimeError(f"{routing_role} failed across all routed models: {'; '.join(errors)}")
+
+    def _build_stream_callback(self, routing_role: str, attempt: int):
+        """Start a CLI token counter for sequential model generation."""
+        if self.ui is None or self._parallel_build_active:
+            return None
+        label_role = routing_role.replace("_", " ").title()
+        label = (
+            f"    {label_role} generation"
+            if attempt == 1
+            else f"    {label_role} generation (fallback #{attempt})"
+        )
+        self.ui.stream_stop()
+        self.ui.stream_start(label)
+        return self.ui.stream_chunk
+
+    def _strict_builder_response(self, agent, prompt: str, task: dict, spec: str, decisions, on_chunk=None) -> str:
+        """Return strict JSON for Spec API tasks, using deterministic scaffolds when available."""
+        from .scaffolds import scaffold_supported_task
+
+        decisions_dict = decisions if isinstance(decisions, dict) else {}
+        deterministic = scaffold_supported_task(task, spec, decisions_dict)
+        if deterministic is not None:
+            files = agent.extract_files(deterministic)
+            payload = {
+                "status": "success",
+                "files": [{"path": path, "content": content} for path, content in files],
+                "contracts": {"api": [], "models": [], "events": []},
+                "uses_contracts": [],
+                "notes": ["Generated by deterministic Forge scaffold."],
+                "requires": [],
+            }
+            return json.dumps(payload)
+        if on_chunk is not None:
+            return agent.invoke_streaming(prompt, on_chunk=on_chunk, json_mode=True)
+        return agent.invoke_json(prompt)
 
     def _fix_with_routing(
         self,
@@ -900,9 +954,7 @@ class BuildOrchestrator:
             ],
             "deploy_template": self._read_forge_file("deploy.md"),
         }
-        route_role = specialization if specialization in {
-            "backend", "frontend", "ci", "deploy", "security", "test", "tester",
-        } else agent_name
+        route_role = resolve_agent_for_task(agent_name, specialization)
         response, files, used_provider, usage = self._generate_with_routing(
             agent_name="builder",
             route_role=route_role,
@@ -956,7 +1008,7 @@ class BuildOrchestrator:
                 final_errors=refeed_history[-1].get("remaining_errors", 0),
             )
 
-        writer_agent = self._get_classic_agent("builder", used_provider)
+        writer_agent = self._get_runtime_agent("builder", used_provider)
         self.audit.log(
             "task_model_used",
             build_id=self.state.build_id,
@@ -1301,7 +1353,11 @@ class BuildOrchestrator:
         def _run(task_id: str):
             self._run_single_task(task_id, spec, rules)
 
-        failed_ids = scheduler.execute(graph, _run)
+        self._parallel_build_active = True
+        try:
+            failed_ids = scheduler.execute(graph, _run)
+        finally:
+            self._parallel_build_active = False
 
         # Mark skipped tasks
         for tid in failed_ids:
@@ -1429,7 +1485,7 @@ class BuildOrchestrator:
                                 spec=spec,
                                 rules=rules,
                             )
-                            fix_agent = self._get_classic_agent(producer, used_provider)
+                            fix_agent = self._get_runtime_agent(producer, used_provider)
                             written = fix_agent.write_files(fixed_files)
 
                             # Update bus with fixed versions
