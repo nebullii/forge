@@ -19,9 +19,11 @@ SUPPORTED_FRAMEWORKS = {
 }
 
 RECOMMENDED_OLLAMA_MODELS = {
-    "qwen2.5:3b",
+    "gpt-oss:20b",
+    "gemma3:12b",
     "qwen3:latest",
     "llama3.2:3b",
+    "llama3.1:8b",
 }
 
 
@@ -31,4 +33,3 @@ def is_supported_provider(name: str) -> bool:
 
 def is_recommended_ollama_model(name: str) -> bool:
     return (name or "").strip().lower() in {item.lower() for item in RECOMMENDED_OLLAMA_MODELS}
-
