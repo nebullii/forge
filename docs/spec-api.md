@@ -134,7 +134,7 @@ Backend tasks must include at least one API, model, or event contract.
 
 ## Known Limits
 
-- Spec API version `0.1` is the only supported version.
+- Spec API versions `0.1` and `0.2` are supported. `0.2` is currently forward-compatible with `0.1`.
 - The local model must still be capable enough to generate valid code.
-- Streaming events are Server-Sent Events; distributed workers are not implemented.
+- Streaming events are Server-Sent Events.
 - Non-Spec API builds still use the legacy planner-first path.

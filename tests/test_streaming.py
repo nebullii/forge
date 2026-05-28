@@ -6,6 +6,8 @@ from typing import Generator
 import pytest
 
 from src.agents.base import BaseAgent
+from src.agents.builder import BuilderAgent
+from src.orchestrator import BuildOrchestrator
 from src.providers.base import BaseProvider, ProviderConfig
 
 
@@ -90,3 +92,48 @@ def test_stream_with_retry_recovers_from_transient_error():
     chunks = list(p.stream_with_retry([{"role": "user", "content": "hi"}]))
     assert chunks == ["ok"]
     assert p.calls == 2
+
+
+def test_builder_backend_streaming_forwards_chunks(tmp_path):
+    response = (
+        '{"files":[{"path":"backend/main.py","content":"from fastapi import FastAPI\\n"}],'
+        '"contracts":{"api":[],"models":[],"events":[]}}'
+    )
+    provider = FakeStreamingProvider(chunks=[response[:20], response[20:]])
+    agent = BuilderAgent(provider, project_root=tmp_path)
+    received: list[str] = []
+
+    result = agent.build_task(
+        {"specialization": "backend", "name": "Build backend", "files": ["backend/main.py"]},
+        spec="# Project: Test",
+        rules="",
+        decisions={"stack": {"framework": "fastapi"}},
+        on_chunk=received.append,
+    )
+
+    assert result == response
+    assert "".join(received) == response
+
+
+def test_orchestrator_stream_callback_disabled_during_parallel_build():
+    class FakeUI:
+        def __init__(self):
+            self.started = False
+
+        def stream_stop(self):
+            pass
+
+        def stream_start(self, _label):
+            self.started = True
+
+        def stream_chunk(self, _text):
+            pass
+
+    orch = BuildOrchestrator.__new__(BuildOrchestrator)
+    orch.ui = FakeUI()
+    orch._parallel_build_active = True
+
+    callback = orch._build_stream_callback("backend", 1)
+
+    assert callback is None
+    assert orch.ui.started is False

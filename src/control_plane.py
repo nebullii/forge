@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from .agents.registry import agent_card, list_capabilities
+from .job_queue import JobQueue, QueuedJob
 from .providers.base import ProviderConfig
 from .router import ModelRouter
 from .specapi import compile_task_graph, parse_spec_file, parse_spec_text
@@ -50,12 +52,14 @@ _JOBS: dict[str, ControlJob] = {}
 _JOBS_LOCK = threading.Lock()
 
 
-def run_control_plane(host: str = "127.0.0.1", port: int = 4123, project_root: Path | None = None) -> None:
+def run_control_plane(host: str = "127.0.0.1", port: int = 4123, project_root: Path | None = None, ui: bool = False) -> None:
     """Run Forge's local JSON API server."""
     root = project_root or Path.cwd()
     handler = _make_handler(root)
     server = ThreadingHTTPServer((host, port), handler)
     print(f"Forge API listening on http://{host}:{port}")
+    if ui:
+        print(f"Dashboard available at http://{host}:{port}/dashboard")
     print("Press Ctrl+C to stop.")
     try:
         server.serve_forever()
@@ -83,7 +87,13 @@ def _make_handler(project_root: Path):
             path = parsed.path.rstrip("/") or "/"
             query = parse_qs(parsed.query)
             try:
-                if method == "GET" and path == "/api/health":
+                if method == "GET" and path in {"/", "/dashboard"}:
+                    self._html(200, _dashboard_html())
+                elif method == "GET" and path == "/.well-known/agent.json":
+                    self._json(200, agent_card())
+                elif method == "GET" and path == "/api/agents":
+                    self._json(200, {"agents": list_capabilities()})
+                elif method == "GET" and path == "/api/health":
                     self._json(200, {"ok": True, "service": "forge-control-plane"})
                 elif method == "POST" and path == "/api/spec/validate":
                     payload = self._payload()
@@ -129,6 +139,8 @@ def _make_handler(project_root: Path):
                         "state": _build_state(project_root),
                         "jobs": _jobs_for_project(project_root),
                     })
+                elif method == "GET" and path == "/api/jobs":
+                    self._json(200, {"jobs": _queued_jobs_for_project(project_root)})
                 elif method == "GET" and path.startswith("/api/builds/") and path.endswith("/events/stream"):
                     parts = path.split("/")
                     build_id = parts[-3] if len(parts) >= 3 else ""
@@ -193,6 +205,14 @@ def _make_handler(project_root: Path):
             self.end_headers()
             self.wfile.write(encoded)
 
+        def _html(self, status: int, body: str) -> None:
+            encoded = body.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
         def _sse(self, payload: dict[str, Any], *, once: bool = False) -> None:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -212,6 +232,8 @@ def _make_handler(project_root: Path):
 def start_build_job(project_root: Path, payload: dict[str, Any] | None = None) -> ControlJob:
     """Start a background full-build job using the real orchestrator."""
     payload = payload or {}
+    if payload.get("queue") or payload.get("distributed"):
+        return _enqueue_control_job(project_root, "build", payload)
     job = ControlJob(
         id=uuid.uuid4().hex[:10],
         kind="build",
@@ -232,6 +254,8 @@ def start_task_job(project_root: Path, payload: dict[str, Any] | None = None) ->
     """Start a background single-task job using the real orchestrator task runner."""
     payload = payload or {}
     task_id = str(payload.get("task_id") or "")
+    if payload.get("queue") or payload.get("distributed"):
+        return _enqueue_control_job(project_root, "task", payload)
     job = ControlJob(
         id=uuid.uuid4().hex[:10],
         kind="task",
@@ -247,6 +271,61 @@ def start_task_job(project_root: Path, payload: dict[str, Any] | None = None) ->
     )
     thread.start()
     return job
+
+
+def _enqueue_control_job(project_root: Path, kind: str, payload: dict[str, Any]) -> ControlJob:
+    queued = JobQueue(project_root / ".forge").enqueue(kind, project_root, payload)
+    job = _control_job_from_queued(queued)
+    _remember_job(job)
+    _log_control_event(project_root, "job_queued", job=job.to_dict(), durable=True)
+    return job
+
+
+def _control_job_from_queued(job: QueuedJob) -> ControlJob:
+    return ControlJob(
+        id=job.id,
+        kind=job.kind,
+        status=job.status,
+        project_root=job.project_root,
+        build_id=job.build_id,
+        task_id=job.task_id,
+        error=job.error,
+        created_at=job.created_at,
+        started_at=job.started_at,
+        completed_at=job.completed_at,
+    )
+
+
+def run_worker(project_root: Path | None = None, *, once: bool = False, poll_interval: float = 1.0) -> None:
+    """Run queued Forge jobs from the SQLite-backed local queue."""
+    root = project_root or Path.cwd()
+    queue = JobQueue(root / ".forge")
+    print(f"Forge worker watching {queue.path}")
+    while True:
+        job = queue.claim_next(root)
+        if job is None:
+            if once:
+                print("No queued jobs.")
+                return
+            time.sleep(poll_interval)
+            continue
+        _log_control_event(root, "worker_job_started", job=job.to_dict())
+        try:
+            if job.kind == "build":
+                build_id = _run_build_worker(root, job.payload)
+            elif job.kind == "task":
+                build_id = _run_task_worker(root, job.payload)
+            else:
+                raise ValueError(f"unknown queued job kind: {job.kind}")
+            queue.complete(job.id, build_id=build_id)
+            _log_control_event(root, "worker_job_completed", job_id=job.id, build_id=build_id)
+            print(f"Completed {job.kind} job {job.id}")
+        except Exception as exc:
+            queue.fail(job.id, str(exc))
+            _log_control_event(root, "worker_job_failed", job_id=job.id, error=str(exc))
+            print(f"Failed {job.kind} job {job.id}: {exc}")
+        if once:
+            return
 
 
 def _remember_job(job: ControlJob) -> None:
@@ -394,11 +473,19 @@ def _ensure_task_dependencies_complete(orchestrator, task_id: str) -> None:
 def _jobs_for_project(project_root: Path) -> list[dict[str, Any]]:
     root = str(project_root)
     with _JOBS_LOCK:
-        return [
+        memory_jobs = [
             job.to_dict()
             for job in _JOBS.values()
             if job.project_root == root
         ]
+    queued = _queued_jobs_for_project(project_root)
+    seen = {job["id"] for job in memory_jobs}
+    return memory_jobs + [job for job in queued if job["id"] not in seen]
+
+
+def _queued_jobs_for_project(project_root: Path) -> list[dict[str, Any]]:
+    queue = JobQueue(project_root / ".forge")
+    return [job.to_dict() for job in queue.list(project_root)]
 
 
 def _events_payload(project_root: Path, build_id: str = "") -> dict[str, Any]:
@@ -457,6 +544,69 @@ def _log_control_event(project_root: Path, event: str, **data: Any) -> None:
 def _sse_event(event: str, data: dict[str, Any]) -> bytes:
     encoded = json.dumps(data, sort_keys=True)
     return f"event: {event}\ndata: {encoded}\n\n".encode("utf-8")
+
+
+def _dashboard_html() -> str:
+    return """<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Forge Dashboard</title>
+    <style>
+      body { margin: 0; font: 14px system-ui, sans-serif; background: #0c0c0e; color: #f4f4f5; }
+      header { padding: 18px 24px; border-bottom: 1px solid #27272a; display: flex; justify-content: space-between; align-items: center; }
+      main { padding: 24px; display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+      section { border: 1px solid #27272a; border-radius: 8px; padding: 16px; background: #111114; }
+      h1 { margin: 0; font-size: 18px; }
+      h2 { margin: 0 0 12px; font-size: 14px; color: #a1a1aa; }
+      pre { white-space: pre-wrap; word-break: break-word; margin: 0; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: #d4d4d8; }
+      button { background: #60a5fa; color: #020617; border: 0; border-radius: 6px; padding: 7px 12px; font-weight: 600; cursor: pointer; }
+      .muted { color: #71717a; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div>
+        <h1>Forge Dashboard</h1>
+        <div class="muted">Local build state, tasks, contracts, jobs, and events</div>
+      </div>
+      <button id="refresh">Refresh</button>
+    </header>
+    <main>
+      <section><h2>Builds</h2><pre id="builds">Loading...</pre></section>
+      <section><h2>Tasks</h2><pre id="tasks">Loading...</pre></section>
+      <section><h2>Contracts</h2><pre id="contracts">Loading...</pre></section>
+      <section><h2>Jobs</h2><pre id="jobs">Loading...</pre></section>
+      <section><h2>Agents</h2><pre id="agents">Loading...</pre></section>
+      <section><h2>Events</h2><pre id="events">Loading...</pre></section>
+    </main>
+    <script>
+      const endpoints = {
+        builds: '/api/builds',
+        tasks: '/api/tasks',
+        contracts: '/api/contracts',
+        jobs: '/api/jobs',
+        agents: '/api/agents',
+        events: '/api/events'
+      };
+      async function load() {
+        for (const [id, url] of Object.entries(endpoints)) {
+          const el = document.getElementById(id);
+          try {
+            const res = await fetch(url);
+            el.textContent = JSON.stringify(await res.json(), null, 2);
+          } catch (err) {
+            el.textContent = String(err);
+          }
+        }
+      }
+      document.getElementById('refresh').addEventListener('click', load);
+      load();
+    </script>
+  </body>
+</html>
+"""
 
 
 def _truthy(value: str) -> bool:

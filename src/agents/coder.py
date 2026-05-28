@@ -22,7 +22,7 @@ class CoderAgent(BaseAgent):
     )
 
     def generate_files(self, task: dict, spec: str, rules: str,
-                       decisions: str, project_context: str) -> str:
+                       decisions: str, project_context: str, on_chunk=None) -> str:
         """Generate code for a single task. Returns raw LLM response."""
         prompt = f"""\
 ## Project Specification
@@ -58,6 +58,8 @@ Important:
 - Follow the build rules exactly
 - If modifying an existing file, output the ENTIRE updated file"""
 
+        if on_chunk is not None:
+            return self.invoke_streaming(prompt, on_chunk=on_chunk, json_mode=True)
         return self.invoke_json(prompt)
 
     def fix_file(self, filepath: str, current_content: str, issue: str,

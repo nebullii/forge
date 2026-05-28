@@ -24,8 +24,11 @@ Thumbs.db
 
 # Project
 *.log
+.forge/
 test-adk-project/
 local-test/
 website-test/
+freelancer-crm/
+smoke-web/
 .claude/
 CLAUDE.md

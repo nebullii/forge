@@ -11,10 +11,13 @@ The current production-ready MVP focuses on:
 - role-based model routing for backend, frontend, tester, reviewer, and deploy tasks
 - a REST control plane for builds, tasks, contracts, artifacts, models, and events
 - deterministic validation before and after model generation
+- optional dashboard and durable queued worker mode for the local REST API
 
 ## Status
 
-Core architecture is implemented and test-green.
+Core architecture is implemented and test-green. This is a local-first MVP for
+technical review and iteration; generated application quality still depends on
+the configured model.
 
 ```bash
 pytest -q
@@ -343,6 +346,8 @@ forge dev
 forge contracts export --format openapi
 
 forge serve --port 4123
+forge serve --port 4123 --ui
+forge worker --once
 forge eval smoke --scenario crm-basic
 ```
 
@@ -423,11 +428,16 @@ pytest tests/test_specapi.py tests/test_orchestrator.py tests/test_agent_contrac
 
 ## Known Limits
 
-- Spec API version `0.1` is the only supported version.
+- Spec API versions `0.1` and `0.2` are accepted; `0.2` is currently forward-compatible with `0.1`.
 - Local model quality still matters.
 - Non-Spec API builds still support the legacy planner-first path.
-- REST jobs are in-process, not distributed workers.
-- SSE is available for event streaming, but there is no bundled UI yet.
+- REST jobs run in-process by default; pass `{"queue": true}` to the REST API and run `forge worker` for durable local worker execution.
+- SSE is available for event streaming, and `forge serve --ui` serves a local dashboard.
+
+## Technical Review Brief
+
+For a concise architecture and readiness summary, see
+[docs/review-brief.md](docs/review-brief.md).
 
 ## License
 

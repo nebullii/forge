@@ -914,6 +914,18 @@ def cmd_serve(args):
         host=getattr(args, "host", "127.0.0.1"),
         port=getattr(args, "port", 4123),
         project_root=Path.cwd(),
+        ui=bool(getattr(args, "ui", False)),
+    )
+
+
+def cmd_worker(args):
+    """Run queued REST control-plane jobs."""
+    from .control_plane import run_worker
+
+    run_worker(
+        project_root=Path.cwd(),
+        once=bool(getattr(args, "once", False)),
+        poll_interval=float(getattr(args, "poll_interval", 1.0)),
     )
 
 
@@ -1254,7 +1266,14 @@ def main():
     serve_parser = subparsers.add_parser("serve", help="Run local Forge REST control plane")
     serve_parser.add_argument("--host", default="127.0.0.1", help="Bind host")
     serve_parser.add_argument("--port", type=int, default=4123, help="Bind port")
+    serve_parser.add_argument("--ui", action="store_true", help="Serve the local dashboard at /dashboard")
     serve_parser.set_defaults(func=cmd_serve)
+
+    # forge worker
+    worker_parser = subparsers.add_parser("worker", help="Run queued REST control-plane jobs")
+    worker_parser.add_argument("--once", action="store_true", help="Process at most one queued job")
+    worker_parser.add_argument("--poll-interval", type=float, default=1.0, help="Seconds between queue polls")
+    worker_parser.set_defaults(func=cmd_worker)
 
     # forge doctor
     doctor_parser = subparsers.add_parser("doctor", help="Check project and provider readiness")
