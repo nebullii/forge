@@ -4,6 +4,10 @@ Forge is a local-first AI software builder. It turns a structured `.forge/spec.m
 file into a working codebase through a deterministic task graph, specialist model
 routing, API contracts, verification, and policy-controlled file writes.
 
+For teams comparing AI app builders: Forge is an inspectable, local-first
+alternative to prompt-only generators. It is built around specs, agents, audit
+logs, model routing, and a small API plane that can be run privately.
+
 The current production-ready MVP focuses on:
 
 - Forge Spec API primitives inside markdown specs
@@ -54,16 +58,17 @@ Start Ollama:
 ollama serve
 ```
 
-Pull at least one code-capable model:
+Pull at least one modern local model:
 
 ```bash
-ollama pull qwen2.5-coder:7b
+ollama pull qwen3:latest
 ```
 
-Recommended if your machine can handle it:
+Recommended options if your machine can handle them:
 
 ```bash
-ollama pull qwen2.5-coder:14b
+ollama pull gpt-oss:20b
+ollama pull gemma3:12b
 ollama pull llama3.1:8b
 ```
 
@@ -79,24 +84,29 @@ Example `~/.forge/config.yaml`:
 providers:
   - name: ollama
     base_url: http://localhost:11434
-    model: qwen2.5-coder:7b
+    model: qwen3:latest
     profiles:
-      backend:
-        model: qwen2.5-coder:7b
+      primary:
+        model: qwen3:latest
         capabilities: [code, reasoning, local]
-      frontend:
-        model: qwen2.5-coder:7b
+      coder:
+        model: qwen3:latest
         capabilities: [code, reasoning, local]
       reviewer:
         model: llama3.1:8b
         capabilities: [review, reasoning, local]
 
 model_routing:
-  backend: ollama:backend
-  frontend: ollama:frontend
-  tester: ollama:backend
+  planner: ollama:primary
+  builder: ollama:coder
+  backend: ollama:coder
+  frontend: ollama:coder
+  tester: ollama:coder
+  test: ollama:coder
+  ci: ollama:coder
+  deploy: ollama:coder
   reviewer: ollama:reviewer
-  builder: ollama:backend
+  security: ollama:reviewer
 ```
 
 Check readiness:
@@ -242,6 +252,24 @@ curl -s -X POST http://127.0.0.1:4123/api/tasks/backend.clients/retry \
   -d '{"provider":"ollama","no_review":true}'
 ```
 
+## Positioning
+
+Use this when explaining Forge to teams evaluating AI software builders:
+
+> Forge is a local-first agentic software builder. A developer writes a spec,
+> Forge compiles it into a task graph, then specialist agents generate, verify,
+> and audit the project. It supports private Ollama models, OpenAI-compatible
+> providers, guarded file writes, resumable state, and a REST/API plane for
+> builds, tasks, contracts, artifacts, models, and events.
+
+Forge is strongest when the buyer cares about:
+
+- private or local model execution
+- auditable agent behavior
+- spec-driven project generation
+- enterprise controls around file writes and model routing
+- API access instead of a closed app-only workflow
+
 ## Forge Spec API
 
 Spec API primitives are structured directives inside `.forge/spec.md`.
@@ -365,7 +393,7 @@ ollama list
 If no model is installed:
 
 ```bash
-ollama pull qwen2.5-coder:7b
+ollama pull qwen3:latest
 ```
 
 ### Spec validation fails
@@ -388,7 +416,8 @@ Common issues:
 
 Spec API tasks require structured JSON. If a model returns markdown fences or
 prose, use a stronger code model or lower-temperature local model. For Ollama,
-prefer `qwen2.5-coder` or another code-tuned model.
+prefer `qwen3:latest`, `gpt-oss:20b`, `gemma3:12b`, or another current
+code-capable model available on your machine.
 
 ### Task is blocked by dependencies
 
