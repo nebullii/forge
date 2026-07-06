@@ -134,3 +134,100 @@ def test_strict_spec_api_setup_uses_deterministic_scaffold(tmp_path):
     assert "frontend/package.json" in paths
     assert "frontend/index.html" in paths
     assert "frontend/src/main.jsx" in paths
+
+
+def test_strict_spec_api_backend_uses_deterministic_crud_scaffold(tmp_path):
+    orch = BuildOrchestrator.__new__(BuildOrchestrator)
+    agent = StrictBuilderTestAgent()
+    task = {
+        "id": "backend.clients",
+        "specialization": "backend",
+        "inputs": ["db.model.Client", "api.resource.clients", "auth.email_password"],
+    }
+    spec = """# Project: Freelancer CRM
+
+.project
+  type: web_app
+  stack: react_fastapi_sqlite
+
+.auth.email_password
+  sessions: jwt
+  roles: user
+
+.db.model Client
+  fields:
+    name: string required
+    email: email required
+    status: enum[lead,active,inactive]
+
+.api.resource clients
+  model: Client
+  actions: list, create, update, delete
+  auth: required
+"""
+    decisions = {
+        "stack": {
+            "framework": "fastapi",
+            "frontend": "react",
+            "database": "sqlite",
+            "template_family": "web-app",
+        }
+    }
+
+    response = orch._strict_builder_response(agent, "prompt", task, spec, decisions)
+    payload = json.loads(response)
+    paths = {item["path"] for item in payload["files"]}
+    api_paths = {item["path"] for item in payload["contracts"]["api"]}
+
+    assert "backend/main.py" in paths
+    assert "backend/requirements.txt" in paths
+    assert "/api/clients" in api_paths
+    assert "/api/clients/{id}" in api_paths
+    assert payload["contracts"]["models"][0]["name"] == "Client"
+
+
+def test_strict_spec_api_frontend_uses_deterministic_crud_scaffold(tmp_path):
+    orch = BuildOrchestrator.__new__(BuildOrchestrator)
+    agent = StrictBuilderTestAgent()
+    task = {
+        "id": "frontend.table.client_list",
+        "specialization": "frontend",
+        "inputs": ["ui.table.client_list"],
+    }
+    spec = """# Project: Freelancer CRM
+
+.project
+  type: web_app
+  stack: react_fastapi_sqlite
+
+.db.model Client
+  fields:
+    name: string required
+    email: email required
+    status: enum[lead,active,inactive]
+
+.api.resource clients
+  model: Client
+  actions: list, create, update, delete
+  auth: required
+
+.ui.table client_list
+  source: GET /api/clients
+  columns: name, email, status
+"""
+    decisions = {
+        "stack": {
+            "framework": "fastapi",
+            "frontend": "react",
+            "database": "sqlite",
+            "template_family": "web-app",
+        }
+    }
+
+    response = orch._strict_builder_response(agent, "prompt", task, spec, decisions)
+    payload = json.loads(response)
+    paths = {item["path"] for item in payload["files"]}
+
+    assert "frontend/src/App.jsx" in paths
+    assert "frontend/src/api/clients.js" in paths
+    assert "frontend/src/index.css" in paths

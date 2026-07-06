@@ -298,6 +298,59 @@ More detail: [docs/spec-api.md](docs/spec-api.md)
 
 ## How Forge Works
 
+![Forge architecture diagram](docs/images/architecture-diagram.png)
+
+```mermaid
+flowchart TB
+    CLI["forge build (CLI)"]
+
+    Spec["Spec file<br/>.forge/spec.md"]
+    Parser["Parser<br/>Spec API blocks"]
+    Compiler["Compiler<br/>Validation pass"]
+    TaskGraph["Task graph<br/>Dependency DAG"]
+
+    Bus["Artifact bus<br/>Shared artifacts"]
+    A2A["A2A protocol<br/>Agent messaging"]
+    Scheduler["Scheduler<br/>Parallel tasks"]
+    Orchestrator["Orchestrator<br/>5-phase pipeline"]
+
+    Planner["Planner<br/>Spec to task list"]
+    Specialists["Specialists<br/>API, CI, deploy"]
+    Frontend["Frontend<br/>Contract-aware UI"]
+    Reviewers["Reviewers<br/>Security + fixes"]
+
+    Router["Model router<br/>Role to provider profile"]
+    Providers["Providers<br/>Anthropic, OpenAI, Together, Ollama"]
+    Firewall["Agentic firewall<br/>Validates every file write"]
+    Verify["Verification + audit<br/>Code checks, audit log, budget"]
+
+    Output["Generated codebase<br/>+ state, contracts, logs"]
+
+    CLI --> Spec
+    Spec --> Parser --> Compiler --> TaskGraph
+    TaskGraph --> Orchestrator
+
+    Orchestrator --> Planner
+    Planner --> Specialists --> Frontend --> Reviewers
+    Reviewers -.-> Specialists
+
+    Bus --> Planner
+    A2A --> Planner
+    Scheduler --> Planner
+
+    Planner --> Router --> Providers
+    Reviewers --> Firewall --> Verify
+
+    Providers --> Output
+    Verify --> Output
+```
+
+Forge turns software generation from a prompt into a controlled build pipeline.
+Instead of asking one model to generate an entire app from prose, Forge parses a
+project spec, compiles it into a task graph, routes each task to a specialist
+agent, validates the response, records contracts, and writes files through a
+policy-controlled security layer.
+
 ```text
 .forge/spec.md
   -> Spec API parser
@@ -312,6 +365,122 @@ More detail: [docs/spec-api.md](docs/spec-api.md)
 
 Spec API builds skip the broad LLM planning step. Forge compiles primitives into
 tasks locally, then routes each task to the configured role model.
+
+### Architecture Layers
+
+**1. Product spec layer**
+
+Every project starts with `.forge/spec.md`. The file can contain normal markdown,
+but Forge also understands structured Spec API primitives such as `.project`,
+`.db.model`, `.api.resource`, `.ui.table`, and `.test.case`. This gives Forge a
+parseable product contract instead of relying only on loose natural language.
+
+**2. Task graph layer**
+
+The Spec API compiler turns product primitives into deterministic tasks. A
+resource like `.api.resource clients` becomes backend, frontend, test, and
+contract work with explicit dependencies. Each task has an ID, role, planned
+files, dependency list, and expected output shape.
+
+```json
+{
+  "id": "backend.clients",
+  "role": "backend",
+  "depends_on": [],
+  "planned_files": ["backend/main.py"],
+  "description": "Implement client CRUD API"
+}
+```
+
+**3. Orchestration layer**
+
+The orchestrator is the build engine. It loads project context, checks which
+tasks are ready, selects the right model route, calls the assigned agent,
+validates the result, writes approved files, records contracts, and updates
+`.forge/build-state.yaml`. Failed tasks can be inspected and retried because the
+state is persisted.
+
+**4. Agent layer**
+
+Forge uses specialist agents for planner, builder, backend, frontend, tester,
+reviewer, security, CI, and deploy work. Agents receive narrow tasks with rules,
+context, known contracts, and a required output schema. They do not directly
+write to disk.
+
+**5. Structured output layer**
+
+Model responses are treated like API responses. Spec API tasks require JSON with
+files, contracts, notes, and dependency metadata. Forge rejects malformed output
+instead of blindly applying markdown snippets.
+
+```json
+{
+  "status": "success",
+  "files": [
+    {
+      "path": "backend/main.py",
+      "content": "..."
+    }
+  ],
+  "contracts": {
+    "api": [],
+    "models": [],
+    "events": []
+  },
+  "notes": []
+}
+```
+
+**6. Contract layer**
+
+Backend agents publish API, model, and event contracts. Frontend and test agents
+consume those contracts instead of guessing routes from prose. Contracts are
+persisted in `.forge/contracts.json` and can be exported as OpenAPI.
+
+```json
+{
+  "method": "GET",
+  "path": "/api/clients",
+  "response_model": "Client[]"
+}
+```
+
+**7. Model routing layer**
+
+Forge separates roles from providers. A backend task can use one local Ollama
+profile, a reviewer can use another, and cloud providers can be added through
+the same provider interface. Routing lives in `~/.forge/config.yaml`, not inside
+agent code.
+
+**8. Security layer**
+
+Every generated file write passes through the agentic firewall and project
+policy. Forge blocks absolute paths, path traversal, writes outside the project,
+and policy violations before content reaches disk.
+
+**9. Verification layer**
+
+After generation, Forge runs deterministic checks around structure, contracts,
+Python, JavaScript, HTML behavior, and task-specific requirements. The goal is to
+verify concrete build conditions, not rely on a model's claim that the project
+works.
+
+**10. API plane and worker layer**
+
+`forge serve` exposes the same build system through a local REST API for builds,
+tasks, artifacts, contracts, model health, and events. `forge worker` can execute
+queued REST jobs from SQLite. The CLI, dashboard, REST API, and worker all share
+the same `.forge/` state.
+
+```text
+CLI or REST request
+  -> task/job
+  -> orchestrator
+  -> specialist agent
+  -> structured output
+  -> firewall
+  -> contracts, artifacts, state, events
+```
 
 ## Structured Agent Output
 

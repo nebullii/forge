@@ -22,6 +22,9 @@ class TaskState:
     agent: str = ""
     specialization: str = ""
     planned_files: list[str] = field(default_factory=list)
+    inputs: list[str] = field(default_factory=list)
+    depends_on: list[str] = field(default_factory=list)
+    expected_outputs: list[str] = field(default_factory=list)
     prompt: str = ""        # optional task-specific prompt override
     contracts: str = ""     # API contracts this task exposes
     files_written: list[str] = field(default_factory=list)
