@@ -1,6 +1,8 @@
 """Tests for durable artifact persistence."""
 
 import json
+import logging
+import threading
 
 from src.collaboration import (
     ArtifactStore,
@@ -67,3 +69,31 @@ def test_artifact_store_reset(tmp_path):
 
     assert not (tmp_path / "artifacts.jsonl").exists()
     assert not (tmp_path / "artifacts.json").exists()
+
+
+def test_artifact_store_concurrent_appends_are_not_corrupted(tmp_path, caplog):
+    store = ArtifactStore(tmp_path)
+    thread_count, appends_per_thread = 8, 50
+
+    def worker(worker_id):
+        for i in range(appends_per_thread):
+            store.append(CodeArtifact(
+                path=f"src/worker_{worker_id}/file_{i}.py",
+                content="x = 1\n" * 100,
+                producer_agent="backend",
+            ))
+
+    threads = [
+        threading.Thread(target=worker, args=(worker_id,))
+        for worker_id in range(thread_count)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    with caplog.at_level(logging.WARNING, logger="src.collaboration.store"):
+        loaded = store.load_all()
+
+    assert len(loaded) == thread_count * appends_per_thread
+    assert not caplog.records  # no interleaved/corrupted log entries skipped

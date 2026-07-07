@@ -17,6 +17,8 @@ The current production-ready MVP focuses on:
 - deterministic validation before and after model generation
 - optional dashboard and durable queued worker mode for the local REST API
 
+![Forge architecture diagram](docs/images/architecture-diagram.png)
+
 ## Status
 
 Core architecture is implemented and test-green. This is a local-first MVP for
@@ -297,8 +299,6 @@ Rules:
 More detail: [docs/spec-api.md](docs/spec-api.md)
 
 ## How Forge Works
-
-![Forge architecture diagram](docs/images/architecture-diagram.png)
 
 ```mermaid
 flowchart TB

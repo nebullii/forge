@@ -166,6 +166,7 @@ class BuildOrchestrator:
         self._verification_report = None
 
         self._agent_cache: dict = {}  # lazy: agent_name → agent instance
+        self._agent_cache_lock = threading.Lock()  # guards _agent_cache in parallel mode
         self._skills = skills
 
         # Collaboration layer — shared artifact bus and contract registry
@@ -503,13 +504,14 @@ class BuildOrchestrator:
         }
         cfg = provider_config or self.provider_config
         key = (agent_name, cfg.name, cfg.profile, cfg.model)
-        if key not in self._agent_cache:
-            cls = cls_map.get(agent_name, CoderAgent)
-            provider = create_provider(cfg)
-            self._agent_cache[key] = cls(
-                provider, self.project_root, skills_loader=self._skills
-            )
-        return self._agent_cache[key]
+        with self._agent_cache_lock:
+            if key not in self._agent_cache:
+                cls = cls_map.get(agent_name, CoderAgent)
+                provider = create_provider(cfg)
+                self._agent_cache[key] = cls(
+                    provider, self.project_root, skills_loader=self._skills
+                )
+            return self._agent_cache[key]
 
     def _log_route_selection(self, role: str, decision: RouteDecision, mode: str, attempt: int) -> None:
         self.audit.log(
@@ -868,6 +870,13 @@ class BuildOrchestrator:
         else:
             self._execute_tasks_sequential(spec, rules)
 
+        self._raise_if_tasks_failed()
+
+        if self.ui:
+            self.ui.phase_end("  Build phase complete")
+
+    def _raise_if_tasks_failed(self) -> None:
+        """Raise if any task failed -- the build must not proceed to review/verify."""
         failed_tasks = [task for task in self.state.tasks if task.status == "failed"]
         if failed_tasks:
             names = ", ".join(task.name for task in failed_tasks[:3])
@@ -875,9 +884,6 @@ class BuildOrchestrator:
             raise RuntimeError(
                 f"Build phase failed: {len(failed_tasks)} task(s) failed: {names}{suffix}"
             )
-
-        if self.ui:
-            self.ui.phase_end("  Build phase complete")
 
     # -- Single-task execution (shared by sequential and parallel paths) ----
 
@@ -1038,7 +1044,8 @@ class BuildOrchestrator:
                 if not self.ui:
                     with self._state_lock:
                         print(f"      FIREWALL BLOCK: {filepath} ({reason})")
-                self.state.errors.append(f"Firewall blocked {filepath}: {reason}")
+                with self._state_lock:
+                    self.state.errors.append(f"Firewall blocked {filepath}: {reason}")
                 self._publish_artifact(BuildLogArtifact(
                     message=f"Firewall blocked {filepath}: {reason}",
                     producer_agent="firewall",
@@ -1293,6 +1300,7 @@ class BuildOrchestrator:
             self._execute_tasks_parallel(spec, rules)
         else:
             self._execute_tasks_sequential(spec, rules)
+        self._raise_if_tasks_failed()
 
     # -- Sequential execution (fallback / single-agent plans) ---------------
 
@@ -1348,7 +1356,32 @@ class BuildOrchestrator:
             print("")
 
         def _run(task_id: str):
-            self._run_single_task(task_id, spec, rules)
+            try:
+                self._run_single_task(task_id, spec, rules)
+            except Exception as e:
+                # Attribute the real failure here -- the scheduler only reports
+                # a merged set of failed + skipped IDs, so by the time it
+                # returns we can no longer tell them apart.
+                task = self._task_by_id(task_id)
+                if task is not None:
+                    task.status = "failed"
+                    task.error = str(e)
+                    with self._state_lock:
+                        self.state.errors.append(f"Task '{task.name}': {e}")
+                        self._save_state()
+                    self.audit.log(
+                        "task_failed",
+                        build_id=self.state.build_id,
+                        task_id=task.id,
+                        task_name=task.name,
+                        error=str(e),
+                    )
+                    if self.ui:
+                        self.ui.task_error(task.name, str(e))
+                    else:
+                        with self._state_lock:
+                            print(f"      ERROR: {e}")
+                raise  # let the scheduler record the failure and skip descendants
 
         self._parallel_build_active = True
         try:
@@ -1483,10 +1516,34 @@ class BuildOrchestrator:
                                 rules=rules,
                             )
                             fix_agent = self._get_runtime_agent(producer, used_provider)
-                            written = fix_agent.write_files(fixed_files)
+
+                            # Apply Agentic Firewall to fixes before writing
+                            permitted_files = []
+                            for fp, content in fixed_files:
+                                permitted, reason = self.firewall.validate_file_write(fp, content)
+                                if permitted:
+                                    permitted_files.append((fp, content))
+                                    continue
+                                if not self.ui:
+                                    print(f"      FIREWALL BLOCK: {fp} ({reason})")
+                                self.state.errors.append(f"Firewall blocked {fp}: {reason}")
+                                self._publish_artifact(BuildLogArtifact(
+                                    message=f"Firewall blocked {fp}: {reason}",
+                                    producer_agent="firewall",
+                                    level="error",
+                                ))
+                                self.audit.log(
+                                    "firewall_blocked",
+                                    build_id=self.state.build_id,
+                                    task_id=f"fix:{filepath}",
+                                    path=fp,
+                                    reason=reason,
+                                )
+
+                            written = fix_agent.write_files(permitted_files)
 
                             # Update bus with fixed versions
-                            for fp, content in fixed_files:
+                            for fp, content in permitted_files:
                                 existing = self.bus.latest(fp)
                                 version = (existing.version + 1) if existing else 1
                                 self._publish_artifact(CodeArtifact(

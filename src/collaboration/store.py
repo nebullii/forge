@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import tempfile
+import threading
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
@@ -63,11 +64,13 @@ class ArtifactStore:
         self.forge_path = forge_path
         self.jsonl_path = forge_path / ARTIFACTS_FILE
         self.snapshot_path = forge_path / ARTIFACT_SNAPSHOT_FILE
+        self._lock = threading.Lock()  # guards concurrent file writes in parallel builds
 
     def append(self, artifact: Artifact) -> None:
         entry = self._serialize_artifact(artifact)
-        with open(self.jsonl_path, "a") as f:
-            f.write(json.dumps(entry, sort_keys=True) + "\n")
+        with self._lock:
+            with open(self.jsonl_path, "a") as f:
+                f.write(json.dumps(entry, sort_keys=True) + "\n")
 
     def load_all(self) -> list[Artifact]:
         if not self.jsonl_path.exists():
@@ -91,27 +94,29 @@ class ArtifactStore:
         return artifacts
 
     def reset(self) -> None:
-        for path in (self.jsonl_path, self.snapshot_path):
-            try:
-                if path.exists():
-                    path.unlink()
-            except OSError as exc:
-                logger.warning("Could not reset artifact store file %s (%s)", path, exc)
+        with self._lock:
+            for path in (self.jsonl_path, self.snapshot_path):
+                try:
+                    if path.exists():
+                        path.unlink()
+                except OSError as exc:
+                    logger.warning("Could not reset artifact store file %s (%s)", path, exc)
 
     def write_snapshot(self, artifacts: list[Artifact]) -> None:
         payload = [self._serialize_artifact(artifact) for artifact in artifacts]
         data = json.dumps(payload, indent=2, sort_keys=True) + "\n"
-        try:
-            fd, tmp_path = tempfile.mkstemp(
-                dir=self.forge_path,
-                prefix=".artifacts-",
-                suffix=".tmp",
-            )
-            with os.fdopen(fd, "w") as f:
-                f.write(data)
-            os.replace(tmp_path, self.snapshot_path)
-        except OSError:
-            self.snapshot_path.write_text(data)
+        with self._lock:
+            try:
+                fd, tmp_path = tempfile.mkstemp(
+                    dir=self.forge_path,
+                    prefix=".artifacts-",
+                    suffix=".tmp",
+                )
+                with os.fdopen(fd, "w") as f:
+                    f.write(data)
+                os.replace(tmp_path, self.snapshot_path)
+            except OSError:
+                self.snapshot_path.write_text(data)
 
     def _serialize_artifact(self, artifact: Artifact) -> dict[str, Any]:
         if not is_dataclass(artifact):
