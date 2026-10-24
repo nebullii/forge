@@ -8,7 +8,7 @@ For teams comparing AI app builders: Forge is an inspectable, local-first
 alternative to prompt-only generators. It is built around specs, agents, audit
 logs, model routing, and a small API plane that can be run privately.
 
-The current production-ready MVP focuses on:
+The current experiment focuses on:
 
 - Forge Spec API primitives inside markdown specs
 - local model support through Ollama or OpenAI-compatible providers
@@ -21,7 +21,7 @@ The current production-ready MVP focuses on:
 
 ## Status
 
-Core architecture is implemented and test-green. This is a local-first MVP for
+Core architecture is implemented and test-green. This is a local-first experiment for
 technical review and iteration; generated application quality still depends on
 the configured model.
 
@@ -276,7 +276,7 @@ Forge is strongest when the buyer cares about:
 
 Spec API primitives are structured directives inside `.forge/spec.md`.
 
-Supported MVP primitives:
+Supported primitives:
 
 - `.project`
 - `.auth.email_password`
